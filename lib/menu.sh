@@ -191,36 +191,22 @@ show_login_info() {
     echo ""
     read -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
 }
-
 reset_admin_password() {
-    log_warn "ВНИМАНИЕ: Это действие удалит текущего супер-админа из базы данных."
-    log_warn "WARNING: This will delete the current superadmin from the database."
+    log_step "Сброс пароля администратора / Reset admin password"
     echo ""
-    read -p "Вы уверены? / Are you sure? (y/n): " confirm
-    
-    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-        log_info "Отменено / Cancelled"
-        return 0
-    fi
-    
-    log_step "Сброс данных администратора... / Resetting admin data..."
-    
-    # Очищаем таблицу admin в базе данных PostgreSQL
-    if docker exec remnawave-db psql -U postgres -d remnawave -c "TRUNCATE TABLE admin CASCADE;" >/dev/null 2>&1; then
-        log_success "Данные администратора успешно удалены! / Admin data successfully deleted!"
-        echo ""
-        echo -e "${CYAN}Следующие шаги / Next steps:${NC}"
-        LOCAL_DOMAIN=$(cat /opt/remnawave/.domain 2>/dev/null || echo 'your-domain.com')
-        echo "1. Откройте панель в браузере / Open panel in browser: https://$LOCAL_DOMAIN"
-        echo "2. Вы увидите экран регистрации нового супер-админа."
-        echo "3. Придумайте новый логин и надёжный пароль (используйте кнопку генерации)."
-        echo ""
-    else
-        log_error "Не удалось подключиться к базе данных. Убедитесь, что панель запущена (опция 5)."
-        log_error "Failed to connect to database. Ensure the panel is running (option 5)."
-    fi
-    
+    echo -e "${CYAN}Для сброса пароля выполните следующую команду:${NC}"
+    echo ""
+    echo -e "${YELLOW}docker exec -it remnawave cli${NC}"
+    echo ""
+    echo "Затем выберите опцию 'Reset superadmin' из меню."
+    echo ""
+    echo -e "${CYAN}После сброса:${NC}"
+    LOCAL_DOMAIN=$(cat /opt/remnawave/.domain 2>/dev/null || echo 'your-domain.com')
+    echo "1. Откройте панель: https://$LOCAL_DOMAIN"
+    echo "2. Создайте нового супер-админа с новым паролем"
+    echo ""
     read -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
 }
+
 
 export -f show_main_menu update_panel uninstall_panel view_logs check_status backup_db show_login_info reset_admin_password
