@@ -35,6 +35,8 @@ t() {
             "view_logs") echo "Просмотреть логи" ;;
             "check_status") echo "Проверить статус" ;;
             "backup_db") echo "Создать резервную копию БД" ;;
+            "show_login_info") echo "Показать данные для входа" ;;
+            "reset_admin_password") echo "Сбросить пароль админа" ;;
             "exit") echo "Выход" ;;
             "select_option") echo "Выберите опцию" ;;
             "invalid_option") echo "Неверная опция, попробуйте снова" ;;
@@ -68,6 +70,8 @@ t() {
             "view_logs") echo "View logs" ;;
             "check_status") echo "Check status" ;;
             "backup_db") echo "Backup database" ;;
+            "show_login_info") echo "Show login credentials" ;;
+            "reset_admin_password") echo "Reset admin password" ;;
             "exit") echo "Exit" ;;
             "select_option") echo "Select option" ;;
             "invalid_option") echo "Invalid option, try again" ;;
