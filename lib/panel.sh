@@ -35,8 +35,8 @@ download_panel_files() {
     cd "$PANEL_DIR"
     
     # Скачиваем docker-compose.yml и .env.sample с официального репозитория
-    curl -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml
-    curl -o .env https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample
+    curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml
+    curl -sL -o .env https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample
     
     if [ ! -f docker-compose.yml ] || [ ! -f .env ]; then
         log_error "Failed to download files / Не удалось загрузить файлы"
@@ -111,40 +111,41 @@ setup_reverse_proxy() {
 
 setup_caddy() {
     log_step "Setting up Caddy..."
-    
     cd "$PANEL_DIR"
     
-    # Создаём Caddyfile
+    # Создаём правильный Caddyfile (используем имя сервиса remnawave из docker-compose)
     cat > Caddyfile << EOF
-$DOMAIN {
-    reverse_proxy localhost:3000
+{$DOMAIN} {
+    reverse_proxy remnawave:3000
 }
 EOF
     
-    # Запускаем Caddy в Docker
+    # Удаляем старый контейнер Caddy, если он был запущен с ошибкой ранее
+    docker rm -f caddy 2>/dev/null || true
+    
+    # Запускаем Caddy в той же сети, что и панель (remnawave-network)
     docker run -d --name caddy \
         --restart unless-stopped \
+        --network remnawave-network \
         -p 80:80 \
         -p 443:443 \
-        -p 443:443/udp \
         -v "$PANEL_DIR/Caddyfile:/etc/caddy/Caddyfile" \
         -v caddy_data:/data \
         -v caddy_config:/config \
         caddy:2-alpine
     
-    log_success "Caddy installed and configured"
+    log_success "Caddy installed and configured in remnawave-network"
 }
 
 setup_nginx() {
     log_step "Setting up Nginx..."
-    
     cd "$PANEL_DIR"
     
     # Установка Nginx
-    apt-get update
-    apt-get install -y nginx certbot python3-certbot-nginx
+    apt-get update -qq
+    apt-get install -y -qq nginx certbot python3-certbot-nginx
     
-    # Создаём конфиг
+    # Создаём конфиг (используем 127.0.0.1 вместо localhost для надёжности)
     cat > /etc/nginx/sites-available/remnawave << EOF
 server {
     listen 80;
@@ -152,7 +153,7 @@ server {
     server_name $DOMAIN;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -184,8 +185,9 @@ start_panel() {
     # Запускаем контейнеры
     docker compose up -d
     
-    # Ждём запуска
-    sleep 10
+    # Ждём запуска базы данных и приложения
+    log_info "Waiting for services to start (this may take 15-30 seconds)..."
+    sleep 15
     
     # Проверяем статус
     if docker compose ps | grep -q "Up"; then
