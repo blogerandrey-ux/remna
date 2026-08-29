@@ -210,8 +210,12 @@ install_panel() {
     download_panel_files
     generate_secrets
     configure_domain
-    setup_reverse_proxy
+    
+    # Сначала запускаем панель (создаёт сеть remnawave-network)
     start_panel
+    
+    # Потом настраиваем Caddy/Nginx (подключается к существующей сети)
+    setup_reverse_proxy
 }
 
 export -f install_docker download_panel_files generate_secrets configure_domain setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel
