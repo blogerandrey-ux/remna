@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  remnawave-db:
+    image: postgres:15-alpine
+    container_name: remnawave-db
+    restart: always
+    environment:
+      POSTGRES_DB: remnawave
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - remnawave-db-data:/var/lib/postgresql/data
+    networks:
+      - remnawave-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  remnawave-redis:
+    image: redis:7-alpine
+    container_name: remnawave-redis
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret_password}
+    volumes:
+      - remnawave-redis-data:/data
+    networks:
+      - remnawave-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  remnawave:
+    image: remnawave/backend:latest
+    container_name: remnawave
+    hostname: remnawave
+    restart: always
+    ports:
+      - '127.0.0.1:3000:3000'
+    env_file:
+      - .env
+    networks:
+      - remnawave-network
+    depends_on:
+      remnawave-db:
+        condition: service_healthy
+      remnawave-redis:
+        condition: service_healthy
+    volumes:
+      - remnawave-configs:/var/lib/remnawave/configs
+
+volumes:
+  remnawave-db-data:
+  remnawave-redis-data:
+  remnawave-configs:
+
+networks:
+  remnawave-network:
+    driver: bridge
