@@ -4,7 +4,7 @@ set -e
 INSTALLER_DIR="/opt/remna-installer"
 REPO_URL="https://raw.githubusercontent.com/blogerandrey-ux/remna/main"
 
-echo "==> Подготовка установщика..."
+echo -e "\033[0;36m==> Подготовка установщика...\033[0m"
 mkdir -p "$INSTALLER_DIR/lib" "$INSTALLER_DIR/templates"
 cd "$INSTALLER_DIR"
 
@@ -25,7 +25,7 @@ curl -sL "$REPO_URL/main.sh" -o main.sh
 # Делаем всё исполняемым
 chmod +x lib/*.sh main.sh
 
-echo "==> Запуск интерактивного меню..."
+echo -e "\033[0;36m==> Запуск интерактивного меню...\033[0m"
 echo ""
 sleep 1
 
