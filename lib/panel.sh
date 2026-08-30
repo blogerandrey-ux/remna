@@ -3,15 +3,33 @@
 # Путь для установки панели
 PANEL_DIR="/opt/remnawave"
 
+# Функция для гарантированной разблокировки apt
+unlock_apt() {
+    if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
+        log_warn "Обнаружена блокировка пакетов (unattended-upgrades). Освобождаю..."
+        killall -9 unattended-upgrades 2>/dev/null || true
+        fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
+        fuser -k /var/lib/dpkg/lock 2>/dev/null || true
+        fuser -k /var/lib/apt/lists/lock 2>/dev/null || true
+        fuser -k /var/cache/apt/archives/lock 2>/dev/null || true
+        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
+        dpkg --configure -a
+        sleep 2
+        log_success "Система пакетов разблокирована"
+    fi
+}
+
 install_docker() {
     log_step "$(t 'installing_docker')"
     
-    if [ "$DOCKER_INSTALLED" = true ]; then
-        log_info "Docker already installed, skipping..."
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        log_success "Docker уже установлен и работает. Пропускаем."
         return 0
     fi
     
-    # Установка Docker
+    log_info "Установка Docker..."
+    unlock_apt # Разблокируем apt перед установкой
+    
     curl -fsSL https://get.docker.com -o get-docker.sh
     sh get-docker.sh
     
@@ -20,76 +38,56 @@ install_docker() {
         exit 1
     fi
     
-    # Запуск Docker
     systemctl enable docker
     systemctl start docker
-    
-    log_success "Docker installed successfully"
+    log_success "Docker успешно установлен"
 }
 
 download_panel_files() {
     log_step "$(t 'downloading_files')"
-    
-    # Создаём директорию
     mkdir -p "$PANEL_DIR"
     cd "$PANEL_DIR"
     
-    # Скачиваем docker-compose.yml и .env.sample с официального репозитория
     curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml
     curl -sL -o .env https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample
     
     if [ ! -f docker-compose.yml ] || [ ! -f .env ]; then
-        log_error "Failed to download files / Не удалось загрузить файлы"
+        log_error "Не удалось загрузить файлы"
         exit 1
     fi
-    
-    log_success "Files downloaded successfully"
+    log_success "Файлы загружены"
 }
 
 generate_secrets() {
     log_step "$(t 'generating_secrets')"
-    
     cd "$PANEL_DIR"
     
-    # Генерация APP_SECRET
     sed -i "s/^APP_SECRET=.*/APP_SECRET=$(openssl rand -hex 64)/" .env
-    
-    # Генерация METRICS_PASS
     sed -i "s/^METRICS_PASS=.*/METRICS_PASS=$(openssl rand -hex 64)/" .env
-    
-    # Генерация WEBHOOK_SECRET_HEADER
     sed -i "s/^WEBHOOK_SECRET_HEADER=.*/WEBHOOK_SECRET_HEADER=$(openssl rand -hex 64)/" .env
     
-    # Генерация пароля PostgreSQL
     pw=$(openssl rand -hex 24)
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pw/" .env
     sed -i "s|^\(DATABASE_URL=\"postgresql://postgres:\)[^\@]*\(@.*\)|\1$pw\2|" .env
     
-    log_success "Secrets generated successfully"
+    log_success "Секреты сгенерированы"
 }
 
 configure_domain() {
-    log_step "Configuring domain..."
-    
+    log_step "Настройка домена..."
     cd "$PANEL_DIR"
-    
     echo ""
     read -p "$(t 'enter_domain'): " DOMAIN
     
-    # Проверка домена
     if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-z]{2,}$ ]]; then
         log_error "$(t 'error_domain')"
         exit 1
     fi
     
-    # Сохраняем домен в .env
     sed -i "s/^FRONT_END_DOMAIN=.*/FRONT_END_DOMAIN=$DOMAIN/" .env
     sed -i "s|^SUB_PUBLIC_DOMAIN=.*|SUB_PUBLIC_DOMAIN=$DOMAIN/api/sub|" .env
-    
-    # Сохраняем домен для дальнейшего использования
     echo "$DOMAIN" > /opt/remnawave/.domain
-    
-    log_success "Domain configured: $DOMAIN"
+    log_success "Домен настроен: $DOMAIN"
 }
 
 setup_reverse_proxy() {
@@ -104,26 +102,42 @@ setup_reverse_proxy() {
     elif [ "$proxy_choice" = "2" ]; then
         setup_nginx
     else
-        log_error "Invalid choice / Неверный выбор"
+        log_error "Неверный выбор"
         exit 1
     fi
 }
 
 setup_caddy() {
-    log_step "Setting up Caddy..."
+    log_step "Настройка Caddy и получение SSL..."
     cd "$PANEL_DIR"
     
-    # Создаём правильный Caddyfile (используем имя сервиса remnawave из docker-compose)
+    # 1. Проверка DNS (Критически важно для Caddy!)
+    SERVER_IP=$(curl -s ifconfig.me)
+    DOMAIN_IP=$(getent ahosts "$DOMAIN" | awk '{print $1}' | head -n 1)
+    
+    if [ "$SERVER_IP" != "$DOMAIN_IP" ]; then
+        log_warn "ВНИМАНИЕ: IP сервера ($SERVER_IP) не совпадает с IP домена ($DOMAIN_IP)!"
+        log_warn "Caddy не сможет получить SSL, пока DNS-запись не обновится (это занимает до 15 минут)."
+        log_warn "Если вы только что создали A-запись, подождите или проверьте настройки DNS."
+        echo ""
+        read -p "Продолжить установку всё равно? (y/n): " continue_caddy
+        if [ "$continue_caddy" != "y" ]; then
+            log_info "Установка прервана. Настройте DNS и запустите скрипт снова."
+            exit 0
+        fi
+    fi
+
+    # 2. Создаем Caddyfile
     cat > Caddyfile << EOF
 {$DOMAIN} {
     reverse_proxy remnawave:3000
 }
 EOF
     
-    # Удаляем старый контейнер Caddy, если он был запущен с ошибкой ранее
+    # 3. Удаляем старый контейнер, если он есть
     docker rm -f caddy 2>/dev/null || true
     
-    # Запускаем Caddy в той же сети, что и панель (remnawave-network)
+    # 4. Запускаем Caddy в сети панели
     docker run -d --name caddy \
         --restart unless-stopped \
         --network remnawave-network \
@@ -134,18 +148,27 @@ EOF
         -v caddy_config:/config \
         caddy:2-alpine
     
-    log_success "Caddy installed and configured in remnawave-network"
+    # 5. Даем время на получение сертификата и проверяем результат
+    log_info "Ожидаем получения SSL-сертификата от Let's Encrypt (до 30 секунд)..."
+    sleep 15
+    
+    if ! docker ps | grep -q caddy; then
+        log_error "Caddy не запустился! Причина:"
+        docker logs caddy --tail 15
+        log_info "Проверьте, что порт 80 свободен и домен указывает на этот сервер."
+    else
+        log_success "Caddy успешно запущен и настроен!"
+    fi
 }
 
 setup_nginx() {
-    log_step "Setting up Nginx..."
+    log_step "Настройка Nginx..."
     cd "$PANEL_DIR"
     
-    # Установка Nginx
+    unlock_apt # Разблокируем apt перед установкой Nginx
     apt-get update -qq
     apt-get install -y -qq nginx certbot python3-certbot-nginx
     
-    # Создаём конфиг (используем 127.0.0.1 вместо localhost для надёжности)
     cat > /etc/nginx/sites-available/remnawave << EOF
 server {
     listen 80;
@@ -166,41 +189,28 @@ server {
 }
 EOF
     
-    # Включаем сайт
     ln -sf /etc/nginx/sites-available/remnawave /etc/nginx/sites-enabled/remnawave
     nginx -t
     systemctl restart nginx
     
-    # Получаем SSL сертификат
     certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
-    
-    log_success "Nginx installed and configured with SSL"
+    log_success "Nginx установлен и настроен с SSL"
 }
 
 start_panel() {
     log_step "$(t 'starting_containers')"
-    
     cd "$PANEL_DIR"
     
-    # Запускаем контейнеры
     docker compose up -d
     
-    # Ждём запуска базы данных и приложения
-    log_info "Waiting for services to start (this may take 15-30 seconds)..."
+    log_info "Ожидание запуска базы данных и приложения (15 секунд)..."
     sleep 15
     
-    # Проверяем статус
     if docker compose ps | grep -q "Up"; then
         log_success "$(t 'panel_installed')"
-        echo ""
-        echo -e "${CYAN}════════════════════════════════════════${NC}"
-        echo -e "$(t 'success_installation')"
-        echo -e "$(t 'panel_url') https://$DOMAIN"
-        echo -e "${CYAN}════════════════════════════════════════${NC}"
-        echo ""
     else
-        log_error "Failed to start containers / Не удалось запустить контейнеры"
-        log_error "Check logs: cd $PANEL_DIR && docker compose logs"
+        log_error "Не удалось запустить контейнеры"
+        log_error "Проверьте логи: cd $PANEL_DIR && docker compose logs"
         exit 1
     fi
 }
@@ -211,12 +221,19 @@ install_panel() {
     generate_secrets
     configure_domain
     
-    # Сначала запускаем панель (создаёт сеть remnawave-network)
+    # Сначала запускаем панель (она создаст сеть remnawave-network)
     start_panel
     
-    # Потом настраиваем Caddy/Nginx (подключается к существующей сети)
+    # Потом настраиваем прокси (он подключится к этой сети)
     setup_reverse_proxy
+    
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════${NC}"
+    echo -e "$(t 'success_installation')"
+    echo -e "$(t 'panel_url') https://$DOMAIN"
+    echo -e "${CYAN}════════════════════════════════════════${NC}"
+    echo ""
 }
 
-export -f install_docker download_panel_files generate_secrets configure_domain setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel
+export -f unlock_apt install_docker download_panel_files generate_secrets configure_domain setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel
 export PANEL_DIR
