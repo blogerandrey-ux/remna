@@ -1,11 +1,12 @@
 #!/bin/bash
 # Remnawave Panel Installer - Bootstrap Script
+# Скачивает актуальный код установщика с GitHub и запускает его
 set -euo pipefail
 
 INSTALLER_DIR="/opt/remna-installer"
 REPO_URL="https://raw.githubusercontent.com/blogerandrey-ux/remna/main"
 
-# Проверка root
+# 1. Проверка прав root
 if [[ $EUID -ne 0 ]]; then
     echo -e "\033[0;31m[ERROR] Этот скрипт требует прав root.\033[0m"
     echo "Запустите: sudo bash <(curl -Ls https://raw.githubusercontent.com/blogerandrey-ux/remna/main/install.sh)"
@@ -15,52 +16,47 @@ fi
 echo -e "\033[0;36m==> Remnawave Panel Installer v2.0\033[0m"
 echo -e "\033[0;36m==> Подготовка установщика...\033[0m"
 
-mkdir -p "$INSTALLER_DIR/lib" "$INSTALLER_DIR/templates"
+# Создаём структуру папок (только для кода установщика)
+mkdir -p "$INSTALLER_DIR/lib"
 cd "$INSTALLER_DIR"
 
-# 1. КОД — качаем ВСЕГДА свежим (без кэша)
-echo -e "\033[0;33m  [download]\033[0m lib/colors.sh"
-curl -fsSL "$REPO_URL/lib/colors.sh" -o lib/colors.sh
+# 2. Список файлов кода (качаем ВСЕГДА свежими, без кэша)
+FILES=(
+    "lib/colors.sh"
+    "lib/logger.sh"
+    "lib/language.sh"
+    "lib/checks.sh"
+    "lib/panel.sh"
+    "lib/menu.sh"
+    "main.sh"
+)
 
-echo -e "\033[0;33m  [download]\033[0m lib/logger.sh"
-curl -fsSL "$REPO_URL/lib/logger.sh" -o lib/logger.sh
-
-echo -e "\033[0;33m  [download]\033[0m lib/language.sh"
-curl -fsSL "$REPO_URL/lib/language.sh" -o lib/language.sh
-
-echo -e "\033[0;33m  [download]\033[0m lib/checks.sh"
-curl -fsSL "$REPO_URL/lib/checks.sh" -o lib/checks.sh
-
-echo -e "\033[0;33m  [download]\033[0m lib/panel.sh"
-curl -fsSL "$REPO_URL/lib/panel.sh" -o lib/panel.sh
-
-echo -e "\033[0;33m  [download]\033[0m lib/menu.sh"
-curl -fsSL "$REPO_URL/lib/menu.sh" -o lib/menu.sh
-
-echo -e "\033[0;33m  [download]\033[0m main.sh"
-curl -fsSL "$REPO_URL/main.sh" -o main.sh
-
-# 2. ШАБЛОНЫ — качаем только если нет (кэшируем)
-for template in docker-compose-panel.yml caddy.conf nginx.conf; do
-    if [ ! -f "templates/$template" ]; then
-        echo -e "\033[0;33m  [download]\033[0m templates/$template"
-        curl -fsSL "$REPO_URL/templates/$template" -o "templates/$template"
-    else
-        echo -e "\033[0;32m  [cached]\033[0m templates/$template (сохранён конфиг)"
+# 3. Цикл скачивания с человеческой обработкой ошибок
+for f in "${FILES[@]}"; do
+    echo -e "\033[0;33m  [download]\033[0m $f"
+    if ! curl -fsSL "$REPO_URL/$f" -o "$f"; then
+        echo -e "\033[0;31m[ERROR] Не удалось скачать $f\033[0m"
+        echo "Возможные причины:"
+        echo "  - Отсутствует подключение к интернету"
+        echo "  - GitHub недоступен или превышен лимит запросов"
+        echo "  - Ошибка в пути к файлу в репозитории"
+        exit 1
     fi
 done
 
-# Проверка целостности main.sh
+# 4. Проверка целостности: main.sh должен быть bash-скриптом
 if ! head -1 main.sh | grep -q '^#!/bin/bash'; then
     echo -e "\033[0;31m[ERROR] main.sh повреждён или не является bash-скриптом.\033[0m"
-    echo "GitHub вернул unexpected content. Попробуйте позже."
+    echo "GitHub мог вернуть HTML-страницу (например, 404) вместо кода."
     exit 1
 fi
 
+# Делаем все скачанные скрипты исполняемыми
 chmod +x lib/*.sh main.sh
 
 echo ""
 echo -e "\033[0;36m==> Запуск интерактивного меню...\033[0m"
 sleep 1
 
+# Запускаем основной скрипт (exec заменяет текущий процесс,不留 хвостов)
 exec bash main.sh
