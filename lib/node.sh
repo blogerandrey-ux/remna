@@ -42,53 +42,62 @@ install_node() {
     # 3. Создание директории
     NODE_DIR="/opt/remnanode"
     mkdir -p "$NODE_DIR"
-    cd "$NODE_DIR"
+    cd "$NODE_DIR" || { log_error "Cannot access $NODE_DIR"; return 1; }
 
-    # 4. Генерация .env (безопасное хранение секретов)
-    log_info "$(t 'generating_secrets')"
-    cat > .env << EOF
-NODE_PORT='$NODE_PORT'
-SECRET_KEY='$NODE_TOKEN'
-NODE_NAME='$NODE_NAME'
-EOF
-    chmod 600 .env
-
-    # 5. Создание docker-compose.yml (официальный формат Remnawave Node)
-    cat > docker-compose.yml << 'EOF'
-services:
-  remnanode:
-    container_name: remnanode
-    hostname: remnanode
-    image: remnawave/node:latest
-    restart: always
-    network_mode: host
-    env_file:
-      - .env
-EOF
-
-    # 6. Запуск контейнера
-    log_info "$(t 'starting_containers')"
-    if ! docker compose up -d; then
-        log_error "$(t 'error_docker_compose')"
-        read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+# ... (в update_node) ...
+update_node() {
+    NODE_DIR="/opt/remnanode"
+    if [ ! -d "$NODE_DIR" ] || [ ! -f "$NODE_DIR/docker-compose.yml" ]; then
+        log_error "$(t 'node_not_installed')"
+        read -r -p "Press Enter to continue..."
         return 1
     fi
 
-    # 7. Проверка статуса
-    sleep 3
-    if docker compose ps | grep -q "Up"; then
-        log_success "$(t 'node_installed')"
-        echo ""
-        echo -e "${CYAN}Panel URL:${NC} $PANEL_URL"
-        echo -e "${CYAN}Node Port:${NC} $NODE_PORT"
-    else
-        log_error "$(t 'error_node_start')"
-        docker compose logs --tail=20
-        read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+    log_step "$(t 'updating_node')"
+    cd "$NODE_DIR" || { log_error "Cannot access $NODE_DIR"; return 1; }
+    
+    if ! docker compose pull; then
+        log_error "Failed to pull node images"
         return 1
     fi
     
-    read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+    if ! docker compose up -d; then
+        log_error "Failed to start node containers"
+        return 1
+    fi
+    
+    log_success "Node updated successfully / Нода обновлена"
+    read -r -p "Press Enter to continue..."
+}
+
+# ... (в uninstall_node) ...
+uninstall_node() {
+    NODE_DIR="/opt/remnanode"
+    if [ ! -d "$NODE_DIR" ]; then
+        log_error "$(t 'node_not_installed')"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    log_warn "This will remove Remnawave Node and all its data!"
+    log_warn "Это удалит Remnawave Node и все её данные!"
+    echo ""
+    read -r -p "Are you sure? / Вы уверены? (y/n) " confirm
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        log_info "Cancelled / Отменено"
+        return 0
+    fi
+
+    log_step "$(t 'uninstalling_node')"
+    cd "$NODE_DIR" || { log_error "Cannot access $NODE_DIR"; return 1; }
+    docker compose down || true
+    
+    cd / || exit 1
+    rm -rf "$NODE_DIR"
+    
+    log_success "Node uninstalled / Нода удалена"
+    read -r -p "Press Enter to continue..."
 }
 
 # Обновление Ноды
