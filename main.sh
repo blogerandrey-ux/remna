@@ -1,33 +1,28 @@
 #!/bin/bash
-set -e
+set -euo pipefail # Усиливаем безопасность
 
-# Определяем путь к скрипту
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export INSTALLER_DIR
 
-# библиотеки:
 source "$INSTALLER_DIR/lib/colors.sh"
 source "$INSTALLER_DIR/lib/logger.sh"
 source "$INSTALLER_DIR/lib/language.sh"
 source "$INSTALLER_DIR/lib/checks.sh"
 source "$INSTALLER_DIR/lib/panel.sh"
-source "$INSTALLER_DIR/lib/node.sh"      # <-- ДОБАВЛЕНО
+source "$INSTALLER_DIR/lib/node.sh"
 source "$INSTALLER_DIR/lib/menu.sh"
 
-# Приветствие
 clear
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║       Remnawave Panel Installer v1.0        ${NC}"
+echo -e "${CYAN}║         Remnawave Installer v2.1.0          ${NC}" # Синхронизировано
 echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Проверки
 check_root
 detect_language
 check_os
 
 log_info "$(t 'welcome')"
 
-# Запуск меню
 show_main_menu
