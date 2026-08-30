@@ -21,12 +21,14 @@ mkdir -p "$INSTALLER_DIR/lib"
 cd "$INSTALLER_DIR"
 
 # 2. Список файлов кода (качаем ВСЕГДА свежими, без кэша)
+# В файле install.sh найдите массив FILES и обновите его:
 FILES=(
     "lib/colors.sh"
     "lib/logger.sh"
     "lib/language.sh"
     "lib/checks.sh"
     "lib/panel.sh"
+    "lib/node.sh"         # <-- ДОБАВЛЕНО
     "lib/menu.sh"
     "main.sh"
 )
