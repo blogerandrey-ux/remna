@@ -30,13 +30,18 @@ install_docker() {
     log_info "Установка Docker..."
     unlock_apt
     
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh
-    
-    if [ $? -ne 0 ]; then
+    # ИСПРАВЛЕНИЕ 1: Безопасная проверка без $?, совместимая с set -e
+    if ! curl -fsSL https://get.docker.com -o get-docker.sh; then
         log_error "$(t 'error_docker')"
-        exit 1
+        return 1
     fi
+    
+    if ! sh get-docker.sh; then
+        log_error "$(t 'error_docker')"
+        rm -f get-docker.sh
+        return 1
+    fi
+    rm -f get-docker.sh
     
     systemctl enable docker
     systemctl start docker
@@ -46,21 +51,27 @@ install_docker() {
 download_panel_files() {
     log_step "$(t 'downloading_files')"
     mkdir -p "$PANEL_DIR"
-    cd "$PANEL_DIR"
     
-    curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml
-    curl -sL -o .env https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample
+    # ИСПРАВЛЕНИЕ 2: Безопасный cd (SC2164)
+    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
-    if [ ! -f docker-compose.yml ] || [ ! -f .env ]; then
-        log_error "Не удалось загрузить файлы"
-        exit 1
+    # ИСПРАВЛЕНИЕ 1: Проверка curl через if !
+    if ! curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml; then
+        log_error "Не удалось загрузить docker-compose.yml"
+        return 1
     fi
+    
+    if ! curl -sL -o .env https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample; then
+        log_error "Не удалось загрузить .env.sample"
+        return 1
+    fi
+    
     log_success "Файлы загружены"
 }
 
 generate_secrets() {
     log_step "$(t 'generating_secrets')"
-    cd "$PANEL_DIR"
+    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
     sed -i "s/^APP_SECRET=.*/APP_SECRET=$(openssl rand -hex 64)/" .env
     sed -i "s/^METRICS_PASS=.*/METRICS_PASS=$(openssl rand -hex 64)/" .env
@@ -68,20 +79,25 @@ generate_secrets() {
     
     pw=$(openssl rand -hex 24)
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pw/" .env
-    sed -i "s|^\(DATABASE_URL=\"postgresql://postgres:\)[^\@]*\(@.*\)|\1$pw\2|" .env
+    
+    # ИСПРАВЛЕНИЕ 4: Убрана хрупкая привязка к хардкодному "postgres" в regex.
+    # Теперь мы явно перезаписываем строку DATABASE_URL, что надежнее и читаемее.
+    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=\"postgresql://postgres:${pw}@remnawave-db:5432/remnawave\"|" .env
     
     log_success "Секреты сгенерированы"
 }
 
 configure_domain() {
     log_step "Настройка домена..."
-    cd "$PANEL_DIR"
+    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     echo ""
-    read -p "$(t 'enter_domain'): " DOMAIN
+    
+    # ИСПРАВЛЕНИЕ 3: Добавлен флаг -r к read (SC2162)
+    read -r -p "$(t 'enter_domain'): " DOMAIN
     
     if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-z]{2,}$ ]]; then
         log_error "$(t 'error_domain')"
-        exit 1
+        return 1
     fi
     
     sed -i "s/^FRONT_END_DOMAIN=.*/FRONT_END_DOMAIN=$DOMAIN/" .env
@@ -97,44 +113,40 @@ configure_gate_password() {
     echo -e "${YELLOW}2)${NC} $(t 'use_auto_password')"
     echo -e "${YELLOW}3)${NC} $(t 'skip_gate_password')"
     echo ""
-    read -p "> " gate_choice
+    read -r -p "> " gate_choice
     
     if [ "$gate_choice" = "1" ]; then
-        # Пользователь вводит свой пароль
-        read -s -p "Введите пароль: " GATE_PASSWORD
+        read -r -s -p "Введите пароль: " GATE_PASSWORD
         echo ""
-        read -s -p "Подтвердите пароль: " GATE_PASSWORD_CONFIRM
+        read -r -s -p "Подтвердите пароль: " GATE_PASSWORD_CONFIRM
         echo ""
         
         if [ "$GATE_PASSWORD" != "$GATE_PASSWORD_CONFIRM" ]; then
             log_error "Пароли не совпадают! Используйте опцию 2 для автогенерации."
-            exit 1
+            return 1
         fi
         
         if [ -z "$GATE_PASSWORD" ]; then
             log_error "Пароль не может быть пустым!"
-            exit 1
+            return 1
         fi
         
         echo "$GATE_PASSWORD" > /opt/remnawave/.gate_password
         log_success "$(t 'gate_password_set')"
         
     elif [ "$gate_choice" = "2" ]; then
-        # Автогенерация
         GATE_PASSWORD=$(openssl rand -hex 16)
         echo "$GATE_PASSWORD" > /opt/remnawave/.gate_password
         log_success "$(t 'gate_password_set')"
         echo -e "${GREEN}Автоматически сгенерированный пароль: $GATE_PASSWORD${NC}"
         
     elif [ "$gate_choice" = "3" ]; then
-        # Пропускаем защиту
         rm -f /opt/remnawave/.gate_password
         log_info "$(t 'gate_password_skipped')"
         return 0
-        
     else
         log_error "Неверный выбор"
-        exit 1
+        return 1
     fi
 }
 
@@ -143,7 +155,7 @@ setup_reverse_proxy() {
     echo "  1) $(t 'caddy')"
     echo "  2) $(t 'nginx')"
     echo ""
-    read -p "> " proxy_choice
+    read -r -p "> " proxy_choice
     
     if [ "$proxy_choice" = "1" ]; then
         setup_caddy
@@ -151,15 +163,14 @@ setup_reverse_proxy() {
         setup_nginx
     else
         log_error "Неверный выбор"
-        exit 1
+        return 1
     fi
 }
 
 setup_caddy() {
     log_step "Настройка Caddy с защитой и SSL..."
-    cd "$PANEL_DIR"
+    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
-    # Проверка DNS
     SERVER_IP=$(curl -s ifconfig.me)
     DOMAIN_IP=$(getent ahosts "$DOMAIN" | awk '{print $1}' | head -n 1)
     
@@ -167,14 +178,13 @@ setup_caddy() {
         log_warn "ВНИМАНИЕ: IP сервера ($SERVER_IP) не совпадает с IP домена ($DOMAIN_IP)!"
         log_warn "Caddy не сможет получить SSL, пока DNS-запись не обновится."
         echo ""
-        read -p "Продолжить установку всё равно? (y/n): " continue_caddy
-        if [ "$continue_caddy" != "y" ]; then
+        read -r -p "Продолжить установку всё равно? (y/n): " continue_caddy
+        if [ "$continue_caddy" != "y" ] && [ "$continue_caddy" != "Y" ]; then
             log_info "Установка прервана. Настройте DNS и запустите скрипт снова."
-            exit 0
+            return 1
         fi
     fi
 
-    # Создаем Caddyfile с или без защиты
     if [ -f /opt/remnawave/.gate_password ]; then
         GATE_PASSWORD=$(cat /opt/remnawave/.gate_password)
         cat > Caddyfile << EOF
@@ -205,26 +215,29 @@ EOF
         -v caddy_config:/config \
         caddy:2-alpine
     
-    log_info "Ожидаем получения SSL-сертификата (до 30 секунд)..."
+    log_info "Ожидаем получения SSL-сертификата (до30 секунд)..."
     sleep 15
     
     if ! docker ps | grep -q caddy; then
         log_error "Caddy не запустился! Причина:"
         docker logs caddy --tail 15
+        return 1
     else
         log_success "Caddy успешно запущен!"
     fi
+    
+    # ИСПРАВЛЕНИЕ 5: Сохраняем тип прокси для симметричного удаления
+    echo "caddy" > "$PANEL_DIR/.proxy_type"
 }
 
 setup_nginx() {
     log_step "Настройка Nginx с защитой и SSL..."
-    cd "$PANEL_DIR"
+    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
     unlock_apt
     apt-get update -qq
     apt-get install -y -qq nginx certbot python3-certbot-nginx apache2-utils
     
-    # Создаем конфиг с или без защиты
     if [ -f /opt/remnawave/.gate_password ]; then
         GATE_PASSWORD=$(cat /opt/remnawave/.gate_password)
         htpasswd -bc /opt/remnawave/.htpasswd admin "$GATE_PASSWORD"
@@ -274,18 +287,33 @@ EOF
     fi
     
     ln -sf /etc/nginx/sites-available/remnawave /etc/nginx/sites-enabled/remnawave
-    nginx -t
+    
+    if ! nginx -t; then
+        log_error "Ошибка в конфигурации Nginx"
+        return 1
+    fi
+    
     systemctl restart nginx
     
-    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
-    log_success "Nginx установлен и настроен с SSL"
+    if ! certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email; then
+        log_warn "Certbot завершился с ошибкой. Проверьте DNS и запустите certbot вручную."
+    else
+        log_success "Nginx установлен и настроен с SSL"
+    fi
+    
+    # ИСПРАВЛЕНИЕ 5: Сохраняем тип прокси для симметричного удаления
+    echo "nginx" > "$PANEL_DIR/.proxy_type"
 }
 
 start_panel() {
     log_step "$(t 'starting_containers')"
-    cd "$PANEL_DIR"
+    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
-    docker compose up -d
+    # ИСПРАВЛЕНИЕ 1: Безопасная проверка запуска
+    if ! docker compose up -d; then
+        log_error "Не удалось запустить контейнеры"
+        return 1
+    fi
     
     log_info "Ожидание запуска базы данных и приложения (15 секунд)..."
     sleep 15
@@ -295,19 +323,21 @@ start_panel() {
     else
         log_error "Не удалось запустить контейнеры"
         log_error "Проверьте логи: cd $PANEL_DIR && docker compose logs"
-        exit 1
+        return 1
     fi
 }
 
 install_panel() {
-    install_docker
-    download_panel_files
-    generate_secrets
-    configure_domain
-    configure_gate_password  # Новая функция
+    # Если любая из этих функций вернет 1, set -e в main.sh корректно обработает это,
+    # но мы используем return 1 вместо exit 1, чтобы не убивать весь процесс bash мгновенно.
+    install_docker || return 1
+    download_panel_files || return 1
+    generate_secrets || return 1
+    configure_domain || return 1
+    configure_gate_password || return 1
     
-    start_panel
-    setup_reverse_proxy
+    start_panel || return 1
+    setup_reverse_proxy || return 1
     
     echo ""
     echo -e "${CYAN}════════════════════════════════════════${NC}"
