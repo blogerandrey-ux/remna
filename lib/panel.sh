@@ -127,9 +127,9 @@ setup_caddy() {
         fi
     fi
 
-    # 2. Создаем Caddyfile
+        # 2. Создаем Caddyfile
     cat > Caddyfile << EOF
-{$DOMAIN} {
+$DOMAIN {
     reverse_proxy remnawave:3000
 }
 EOF
