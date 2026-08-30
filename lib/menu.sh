@@ -5,7 +5,7 @@ show_main_menu() {
         clear
         echo ""
         echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║         Remnawave Installer v2.0            ${NC}"
+        echo -e "${CYAN}║         Remnawave Installer v2.1.0          ${NC}"
         echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
         echo ""
         echo -e "  ${CYAN}─── Panel ───${NC}"
@@ -28,38 +28,38 @@ show_main_menu() {
         echo -e "  ${RED}0)${NC} $(t 'exit')"
         echo ""
         echo -e "${WHITE}$(t 'select_option'):${NC}"
-        read -p "> " choice
+        read -r -p "> " choice
         
         case $choice in
             1)
                 install_panel
                 echo ""
-                read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             2)
                 update_panel
                 echo ""
-                read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             3)
                 uninstall_panel
                 echo ""
-                read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             4)
                 view_logs
                 echo ""
-                read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             5)
                 check_status
                 echo ""
-                read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             6)
                 backup_db
                 echo ""
-                read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             7)
                 show_login_info
@@ -97,68 +97,104 @@ show_main_menu() {
 update_panel() {
     log_step "Updating Remnawave Panel..."
     
-    cd "$PANEL_DIR"
+    # ИСПРАВЛЕНИЕ: Проверка перед cd
+    if [ ! -d "$PANEL_DIR" ]; then
+        log_error "Panel not installed / Панель не установлена"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
     
-    # Скачиваем новые версии файлов
-    curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml
+    # ИСПРАВЛЕНИЕ: Безопасный cd (SC2164)
+    cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
     
-    # Перезапускаем контейнеры
-    docker compose pull
-    docker compose up -d
+    # ИСПРАВЛЕНИЕ: Безопасная проверка curl (совместимо с set -e)
+    if ! curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml; then
+        log_error "Failed to download docker-compose.yml"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    # Перезапускаем контейнеры с проверкой ошибок
+    if ! docker compose pull; then
+        log_error "Failed to pull images"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    if ! docker compose up -d; then
+        log_error "Failed to start containers"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
     
     log_success "Panel updated successfully / Панель обновлена"
-    read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
 }
 
 uninstall_panel() {
     log_warn "This will remove Remnawave Panel and all data!"
     log_warn "Это удалит Remnawave Panel и все данные!"
     echo ""
-    read -p "Are you sure? / Вы уверены? (y/n) " confirm
+    read -r -p "Are you sure? / Вы уверены? (y/n) " confirm
     
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         log_info "Cancelled / Отменено"
         return 0
     fi
     
-    cd "$PANEL_DIR"
+    if [ -d "$PANEL_DIR" ]; then
+        cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
+        docker compose down || true
+    fi
     
-    # Останавливаем контейнеры
-    docker compose down
+    # ИСПРАВЛЕНИЕ: Симметричное удаление прокси (читаем .proxy_type, созданный в panel.sh)
+    if [ -f "$PANEL_DIR/.proxy_type" ]; then
+        PROXY_TYPE=$(cat "$PANEL_DIR/.proxy_type")
+        if [ "$PROXY_TYPE" = "nginx" ]; then
+            log_info "Cleaning up Nginx..."
+            rm -f /etc/nginx/sites-enabled/remnawave
+            rm -f /etc/nginx/sites-available/remnawave
+            nginx -t && systemctl reload nginx || true
+        else
+            log_info "Cleaning up Caddy..."
+            docker rm -f caddy 2>/dev/null || true
+            rm -rf /etc/caddy 2>/dev/null || true
+        fi
+    else
+        # Fallback на случай очень старых установок без .proxy_type
+        docker rm -f caddy 2>/dev/null || true
+    fi
     
-    # Удаляем папку
-    cd /
+    # ИСПРАВЛЕНИЕ: Безопасный cd /
+    cd / || exit 1
     rm -rf "$PANEL_DIR"
     
-    # Удаляем Caddy контейнер если есть
-    docker rm -f caddy 2>/dev/null || true
-    
     log_success "Panel uninstalled / Панель удалена"
-    read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
 }
 
 view_logs() {
     log_step "Viewing logs..."
     
     if [ -d "$PANEL_DIR" ]; then
-        cd "$PANEL_DIR"
+        cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
         docker compose logs -f --tail=100
     else
         log_error "Panel not installed / Панель не установлена"
     fi
-    read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
 }
 
 check_status() {
     log_step "Checking status..."
     
     if [ -d "$PANEL_DIR" ]; then
-        cd "$PANEL_DIR"
+        cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
         docker compose ps
     else
         log_error "Panel not installed / Панель не установлена"
     fi
-    read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
 }
 
 backup_db() {
@@ -166,34 +202,34 @@ backup_db() {
     
     if [ ! -d "$PANEL_DIR" ]; then
         log_error "Panel not installed / Панель не установлена"
-        read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
         return 1
     fi
     
-    cd "$PANEL_DIR"
+    cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
     
-    # Создаём папку для бэкапов
     mkdir -p "$PANEL_DIR/backups"
     
-    # Получаем имя контейнера с базой данных
-    DB_CONTAINER=$(docker compose ps -q remnawave-db)
+    DB_CONTAINER=$(docker compose ps -q remnawave-db 2>/dev/null || true)
     
     if [ -z "$DB_CONTAINER" ]; then
         log_error "Database container not found / Контейнер базы данных не найден"
-        read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
         return 1
     fi
     
-    # Создаём бэкап
     BACKUP_FILE="$PANEL_DIR/backups/backup_$(date +%Y%m%d_%H%M%S).sql"
-    docker exec "$DB_CONTAINER" pg_dump -U postgres remnawave > "$BACKUP_FILE"
     
-    if [ $? -eq 0 ]; then
-        log_success "Backup created: $BACKUP_FILE"
-    else
+    # ИСПРАВЛЕНИЕ: Убрана опасная конструкция с $?, которая ломалась из-за set -e.
+    # Теперь используется корректная проверка через if !
+    if ! docker exec "$DB_CONTAINER" pg_dump -U postgres remnawave > "$BACKUP_FILE" 2>/dev/null; then
         log_error "Backup failed / Ошибка создания бэкапа"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
     fi
-    read -p "Press Enter to continue / Нажмите Enter для продолжения..."
+    
+    log_success "Backup created: $BACKUP_FILE"
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
 }
 
 show_login_info() {
@@ -213,7 +249,7 @@ show_login_info() {
     echo "Если вы забыли пароль, используйте опцию 8 для сброса и создания нового админа."
     echo "If you forgot the password, use option 8 to reset and create a new admin."
     echo ""
-    read -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
+    read -r -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
 }
 
 reset_admin_password() {
@@ -230,7 +266,7 @@ reset_admin_password() {
     echo "1. Откройте панель: https://$LOCAL_DOMAIN"
     echo "2. Создайте нового супер-админа с новым паролем"
     echo ""
-    read -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
+    read -r -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
 }
 
 export -f show_main_menu update_panel uninstall_panel view_logs check_status backup_db show_login_info reset_admin_password
