@@ -5,9 +5,10 @@ show_main_menu() {
         clear
         echo ""
         echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║       Remnawave Panel Installer v2.0        ${NC}"
+        echo -e "${CYAN}║         Remnawave Installer v2.0            ${NC}"
         echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
         echo ""
+        echo -e "  ${CYAN}─── Panel ───${NC}"
         echo -e "  ${YELLOW}1)${NC} $(t 'install_panel')"
         echo -e "  ${YELLOW}2)${NC} $(t 'update_panel')"
         echo -e "  ${YELLOW}3)${NC} $(t 'uninstall_panel')"
@@ -16,6 +17,14 @@ show_main_menu() {
         echo -e "  ${YELLOW}6)${NC} $(t 'backup_db')"
         echo -e "  ${YELLOW}7)${NC} $(t 'show_login_info')"
         echo -e "  ${YELLOW}8)${NC} $(t 'reset_admin_password')"
+        echo ""
+        echo -e "  ${CYAN}─── Node ───${NC}"
+        echo -e "  ${YELLOW}9)${NC} $(t 'install_node')"
+        echo -e "  ${YELLOW}10)${NC} $(t 'update_node')"
+        echo -e "  ${YELLOW}11)${NC} $(t 'uninstall_node')"
+        echo -e "  ${YELLOW}12)${NC} $(t 'view_node_logs')"
+        echo -e "  ${YELLOW}13)${NC} $(t 'get_node_secret')"
+        echo ""
         echo -e "  ${RED}0)${NC} $(t 'exit')"
         echo ""
         echo -e "${WHITE}$(t 'select_option'):${NC}"
@@ -57,6 +66,21 @@ show_main_menu() {
                 ;;
             8)
                 reset_admin_password
+                ;;
+            9)
+                install_node
+                ;;
+            10)
+                update_node
+                ;;
+            11)
+                uninstall_node
+                ;;
+            12)
+                view_node_logs
+                ;;
+            13)
+                get_node_secret
                 ;;
             0)
                 echo "Goodbye! / До свидания!"
@@ -191,6 +215,7 @@ show_login_info() {
     echo ""
     read -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
 }
+
 reset_admin_password() {
     log_step "Сброс пароля администратора / Reset admin password"
     echo ""
@@ -207,6 +232,5 @@ reset_admin_password() {
     echo ""
     read -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
 }
-
 
 export -f show_main_menu update_panel uninstall_panel view_logs check_status backup_db show_login_info reset_admin_password
