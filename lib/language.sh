@@ -37,6 +37,12 @@ t() {
             "backup_db") echo "Создать резервную копию БД" ;;
             "show_login_info") echo "Показать данные для входа" ;;
             "reset_admin_password") echo "Сбросить пароль админа" ;;
+            "configure_gate_password") echo "Настроить пароль-заглушку" ;;
+            "enter_gate_password") echo "Ввести свой пароль для доступа" ;;
+            "use_auto_password") echo "Использовать автоматически сгенерированный пароль" ;;
+            "skip_gate_password") echo "Пропустить защиту (панель будет доступна без пароля)" ;;
+            "gate_password_set") echo "Пароль-заглушка успешно установлен" ;;
+            "gate_password_skipped") echo "Защита паролем пропущена" ;;
             "exit") echo "Выход" ;;
             "select_option") echo "Выберите опцию" ;;
             "invalid_option") echo "Неверная опция, попробуйте снова" ;;
@@ -72,6 +78,12 @@ t() {
             "backup_db") echo "Backup database" ;;
             "show_login_info") echo "Show login credentials" ;;
             "reset_admin_password") echo "Reset admin password" ;;
+            "configure_gate_password") echo "Configure gate password" ;;
+            "enter_gate_password") echo "Enter custom password for access" ;;
+            "use_auto_password") echo "Use automatically generated password" ;;
+            "skip_gate_password") echo "Skip protection (panel will be accessible without password)" ;;
+            "gate_password_set") echo "Gate password successfully set" ;;
+            "gate_password_skipped") echo "Password protection skipped" ;;
             "exit") echo "Exit" ;;
             "select_option") echo "Select option" ;;
             "invalid_option") echo "Invalid option, try again" ;;
