@@ -5,12 +5,13 @@ set -e
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export INSTALLER_DIR
 
-# Подключаем библиотеки
+# библиотеки:
 source "$INSTALLER_DIR/lib/colors.sh"
 source "$INSTALLER_DIR/lib/logger.sh"
 source "$INSTALLER_DIR/lib/language.sh"
 source "$INSTALLER_DIR/lib/checks.sh"
 source "$INSTALLER_DIR/lib/panel.sh"
+source "$INSTALLER_DIR/lib/node.sh"      # <-- ДОБАВЛЕНО
 source "$INSTALLER_DIR/lib/menu.sh"
 
 # Приветствие
