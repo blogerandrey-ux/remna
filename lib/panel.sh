@@ -546,5 +546,5 @@ install_panel() {
     echo ""
 }
 
-export -f unlock_apt install_docker download_panel_files generate_secrets configure_domain configure_gate_password setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel
+export -f unlock_apt install_docker download_panel_files generate_secrets configure_domain configure_gate_password create_gate_page setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel
 export PANEL_DIR
