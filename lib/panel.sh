@@ -30,7 +30,6 @@ install_docker() {
     log_info "Установка Docker..."
     unlock_apt
     
-    # ИСПРАВЛЕНИЕ 1: Безопасная проверка без $?, совместимая с set -e
     if ! curl -fsSL https://get.docker.com -o get-docker.sh; then
         log_error "$(t 'error_docker')"
         return 1
@@ -52,10 +51,8 @@ download_panel_files() {
     log_step "$(t 'downloading_files')"
     mkdir -p "$PANEL_DIR"
     
-    # ИСПРАВЛЕНИЕ 2: Безопасный cd (SC2164)
     cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
-    # ИСПРАВЛЕНИЕ 1: Проверка curl через if !
     if ! curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml; then
         log_error "Не удалось загрузить docker-compose.yml"
         return 1
@@ -79,9 +76,6 @@ generate_secrets() {
     
     pw=$(openssl rand -hex 24)
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pw/" .env
-    
-    # ИСПРАВЛЕНИЕ 4: Убрана хрупкая привязка к хардкодному "postgres" в regex.
-    # Теперь мы явно перезаписываем строку DATABASE_URL, что надежнее и читаемее.
     sed -i "s|^DATABASE_URL=.*|DATABASE_URL=\"postgresql://postgres:${pw}@remnawave-db:5432/remnawave\"|" .env
     
     log_success "Секреты сгенерированы"
@@ -92,7 +86,6 @@ configure_domain() {
     cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     echo ""
     
-    # ИСПРАВЛЕНИЕ 3: Добавлен флаг -r к read (SC2162)
     read -r -p "$(t 'enter_domain'): " DOMAIN
     
     if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-z]{2,}$ ]]; then
@@ -175,8 +168,9 @@ create_gate_page() {
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="refresh" content="3; url=/panel">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Remnawave Panel - Вход</title>
+    <title>Remnawave Panel</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -187,159 +181,37 @@ create_gate_page() {
             align-items: center;
             justify-content: center;
         }
-        .login-box {
+        .box {
             background: white;
             padding: 40px;
             border-radius: 12px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
             width: 100%;
             max-width: 400px;
         }
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 28px;
-            text-align: center;
-        }
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            text-align: center;
-            font-size: 14px;
-        }
-        .form-group { margin-bottom: 20px; }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 500;
-        }
-        input[type="password"] {
-            width: 100%;
-            padding: 12px 16px;
-            border: 2px solid #e1e1e1;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s;
-        }
-        input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        button {
-            width: 100%;
-            padding: 14px;
+        h1 { color: #333; margin-bottom: 15px; font-size: 28px; }
+        p { color: #666; margin-bottom: 25px; font-size: 16px; }
+        .btn {
+            display: inline-block;
+            padding: 14px 30px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            border: none;
+            text-decoration: none;
             border-radius: 8px;
             font-size: 16px;
             font-weight: 600;
-            cursor: pointer;
             transition: transform 0.2s;
         }
-        button:hover { transform: translateY(-2px); }
-        .error {
-            background: #fee;
-            color: #c33;
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-            display: none;
-        }
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            margin-bottom: 20px;
-            gap: 8px;
-        }
-        .checkbox-group input {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-        }
-        .checkbox-group label {
-            cursor: pointer;
-            color: #666;
-            font-size: 14px;
-        }
+        .btn:hover { transform: translateY(-2px); }
     </style>
 </head>
 <body>
-    <div class="login-box">
+    <div class="box">
         <h1>🔐 Remnawave Panel</h1>
-        <p class="subtitle">Введите пароль для доступа</p>
-        
-        <div class="error" id="errorMsg"></div>
-        
-        <form id="loginForm">
-            <div class="form-group">
-                <label for="password">Пароль доступа</label>
-                <input type="password" id="password" name="password" required autocomplete="current-password">
-            </div>
-            
-            <div class="checkbox-group">
-                <input type="checkbox" id="rememberMe" checked>
-                <label for="rememberMe">Запомнить меня</label>
-            </div>
-            
-            <button type="submit">Войти</button>
-        </form>
+        <p>Перенаправление на страницу входа...</p>
+        <a href="/panel" class="btn">Перейти к входу</a>
     </div>
-
-    <script>
-        // Проверяем, есть ли сохранённый пароль в localStorage
-        const savedPassword = localStorage.getItem('remna_gate_password');
-        const rememberMe = localStorage.getItem('remna_remember') === 'true';
-        
-        if (savedPassword && rememberMe) {
-            // Автоматически пытаемся войти
-            attemptLogin(savedPassword);
-        }
-        
-        document.getElementById('loginForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const password = document.getElementById('password').value;
-            const remember = document.getElementById('rememberMe').checked;
-            
-            if (remember) {
-                localStorage.setItem('remna_gate_password', password);
-                localStorage.setItem('remna_remember', 'true');
-            }
-            
-            attemptLogin(password);
-        });
-        
-        function attemptLogin(password) {
-            // Проверяем пароль через запрос к защищённому ресурсу
-            fetch('/panel', {
-                method: 'HEAD',
-                headers: {
-                    'Authorization': 'Basic ' + btoa('admin:' + password)
-                }
-            })
-            .then(response => {
-                if (response.status === 401 || response.status === 403) {
-                    showError('Неверный пароль');
-                } else {
-                    // Успешно! Перенаправляем на панель
-                    window.location.href = '/panel';
-                }
-            })
-            .catch(() => {
-                showError('Ошибка подключения');
-            });
-        }
-        
-        function showError(msg) {
-            const errorEl = document.getElementById('errorMsg');
-            errorEl.textContent = msg;
-            errorEl.style.display = 'block';
-            setTimeout(() => {
-                errorEl.style.display = 'none';
-            }, 5000);
-        }
-    </script>
 </body>
 </html>
 GATEEOF
@@ -365,20 +237,16 @@ setup_caddy() {
         fi
     fi
 
-    # Создаём красивую страницу-заглушку
     create_gate_page
     
-    # Создаем Caddyfile БЕЗ basicauth — просто прокси
     cat > Caddyfile << EOF
 $DOMAIN {
     root * /opt/remnawave
     
-    # Корень отдаем gate.html
     handle / {
         try_files /gate.html
     }
     
-    # Всё остальное сразу в Remnawave
     handle {
         reverse_proxy remnawave:3000
     }
@@ -419,10 +287,8 @@ setup_nginx() {
     apt-get update -qq
     apt-get install -y -qq nginx certbot python3-certbot-nginx
     
-    # Создаём красивую страницу-заглушку
     create_gate_page
     
-    # Создаём конфиг Nginx БЕЗ auth_basic — просто прокси
     cat > /etc/nginx/sites-available/remnawave << EOF
 server {
     listen 80;
@@ -473,9 +339,28 @@ EOF
     echo "nginx" > "$PANEL_DIR/.proxy_type"
 }
 
+start_panel() {
+    log_step "$(t 'starting_containers')"
+    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
+    
+    if ! docker compose up -d; then
+        log_error "Не удалось запустить контейнеры"
+        return 1
+    fi
+    
+    log_info "Ожидание запуска базы данных и приложения (15 секунд)..."
+    sleep 15
+    
+    if docker compose ps | grep -q "Up"; then
+        log_success "$(t 'panel_installed')"
+    else
+        log_error "Не удалось запустить контейнеры"
+        log_error "Проверьте логи: cd $PANEL_DIR && docker compose logs"
+        return 1
+    fi
+}
+
 install_panel() {
-    # Если любая из этих функций вернет 1, set -e в main.sh корректно обработает это,
-    # но мы используем return 1 вместо exit 1, чтобы не убивать весь процесс bash мгновенно.
     install_docker || return 1
     download_panel_files || return 1
     generate_secrets || return 1
@@ -493,5 +378,174 @@ install_panel() {
     echo ""
 }
 
-export -f unlock_apt install_docker download_panel_files generate_secrets configure_domain configure_gate_password create_gate_page setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel
+# ========================================
+# ФУНКЦИИ УПРАВЛЕНИЯ (ОБНОВЛЕНИЕ, УДАЛЕНИЕ И Т.Д.)
+# ========================================
+
+update_panel() {
+    log_step "Обновление Remnawave Panel..."
+    
+    if [ ! -d "$PANEL_DIR" ]; then
+        log_error "Panel not installed / Панель не установлена"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+
+    cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
+    
+    if ! curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml; then
+        log_error "Failed to download docker-compose.yml"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    if ! docker compose pull; then
+        log_error "Failed to pull images"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    if ! docker compose up -d; then
+        log_error "Failed to start containers"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    log_success "Panel updated successfully / Панель обновлена"
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+}
+
+uninstall_panel() {
+    log_warn "This will remove Remnawave Panel and all data!"
+    log_warn "Это удалит Remnawave Panel и все данные!"
+    echo ""
+    read -r -p "Are you sure? / Вы уверены? (y/n) " confirm
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        log_info "Cancelled / Отменено"
+        return 0
+    fi
+    
+    if [ -d "$PANEL_DIR" ]; then
+        cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
+        docker compose down || true
+    fi
+    
+    # Симметричное удаление прокси
+    if [ -f "$PANEL_DIR/.proxy_type" ]; then
+        PROXY_TYPE=$(cat "$PANEL_DIR/.proxy_type")
+        if [ "$PROXY_TYPE" = "nginx" ]; then
+            log_info "Cleaning up Nginx..."
+            rm -f /etc/nginx/sites-enabled/remnawave
+            rm -f /etc/nginx/sites-available/remnawave
+            nginx -t && systemctl reload nginx || true
+        else
+            log_info "Cleaning up Caddy..."
+            docker rm -f caddy 2>/dev/null || true
+        fi
+    else
+        docker rm -f caddy 2>/dev/null || true
+    fi
+    
+    cd / || exit 1
+    rm -rf "$PANEL_DIR"
+    
+    log_success "Panel uninstalled / Панель удалена"
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+}
+
+view_logs() {
+    log_step "Viewing logs..."
+    
+    if [ -d "$PANEL_DIR" ]; then
+        cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
+        docker compose logs -f --tail=100
+    else
+        log_error "Panel not installed / Панель не установлена"
+    fi
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+}
+
+check_status() {
+    log_step "Checking status..."
+    
+    if [ -d "$PANEL_DIR" ]; then
+        cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
+        docker compose ps
+    else
+        log_error "Panel not installed / Панель не установлена"
+    fi
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+}
+
+backup_db() {
+    log_step "Creating database backup..."
+    
+    if [ ! -d "$PANEL_DIR" ]; then
+        log_error "Panel not installed / Панель не установлена"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
+    mkdir -p "$PANEL_DIR/backups"
+    
+    DB_CONTAINER=$(docker compose ps -q remnawave-db 2>/dev/null || true)
+    
+    if [ -z "$DB_CONTAINER" ]; then
+        log_error "Database container not found / Контейнер базы данных не найден"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    BACKUP_FILE="$PANEL_DIR/backups/backup_$(date +%Y%m%d_%H%M%S).sql"
+    
+    if ! docker exec "$DB_CONTAINER" pg_dump -U postgres remnawave > "$BACKUP_FILE" 2>/dev/null; then
+        log_error "Backup failed / Ошибка создания бэкапа"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+        return 1
+    fi
+    
+    log_success "Backup created: $BACKUP_FILE"
+    read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
+}
+
+show_login_info() {
+    log_step "Информация о панели / Panel Information"
+    
+    if [ -f "/opt/remnawave/.domain" ]; then
+        DOMAIN=$(cat /opt/remnawave/.domain)
+        echo -e "${CYAN}URL панели / Panel URL:${NC} https://$DOMAIN"
+    else
+        echo -e "${YELLOW}Домен не найден. Возможно, панель не установлена.${NC}"
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}Логин и пароль / Login and password:${NC}"
+    echo "В целях безопасности пароль хранится в зашифрованном виде (хэш) и не может быть отображён."
+    echo "For security reasons, the password is stored as a hash and cannot be displayed."
+    echo "Если вы забыли пароль, используйте опцию 8 для сброса и создания нового админа."
+    echo "If you forgot the password, use option 8 to reset and create a new admin."
+    echo ""
+    read -r -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
+}
+
+reset_admin_password() {
+    log_step "Сброс пароля администратора / Reset admin password"
+    echo ""
+    echo -e "${CYAN}Для сброса пароля выполните следующую команду:${NC}"
+    echo ""
+    echo -e "${YELLOW}docker exec -it remnawave cli${NC}"
+    echo ""
+    echo "Затем выберите опцию 'Reset superadmin' из меню."
+    echo ""
+    echo -e "${CYAN}После сброса:${NC}"
+    LOCAL_DOMAIN=$(cat /opt/remnawave/.domain 2>/dev/null || echo 'your-domain.com')
+    echo "1. Откройте панель: https://$LOCAL_DOMAIN"
+    echo "2. Создайте нового супер-админа с новым паролем"
+    echo ""
+    read -r -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
+}
+
+export -f unlock_apt install_docker download_panel_files generate_secrets configure_domain configure_gate_password create_gate_page setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel update_panel uninstall_panel view_logs check_status backup_db show_login_info reset_admin_password
 export PANEL_DIR
