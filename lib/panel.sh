@@ -348,7 +348,7 @@ GATEEOF
 }
 
 setup_caddy() {
-    log_step "Настройка Caddy с защитой и SSL..."
+    log_step "Настройка Caddy с SSL..."
     cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
     SERVER_IP=$(curl -s ifconfig.me)
@@ -368,41 +368,18 @@ setup_caddy() {
     # Создаём красивую страницу-заглушку
     create_gate_page
     
-    # Генерируем bcrypt-хэш для пароля (Caddy требует именно хэш, не plain-текст!)
-    log_info "Генерация хэша пароля для Caddy..."
-    if [ -f /opt/remnawave/.gate_password ]; then
-        PLAIN_PASSWORD=$(cat /opt/remnawave/.gate_password)
-        HASHED_PASSWORD=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext "$PLAIN_PASSWORD" 2>/dev/null | tail -n 1)
-        if [ -z "$HASHED_PASSWORD" ]; then
-            log_error "Не удалось сгенерировать хэш пароля"
-            return 1
-        fi
-    else
-        log_error "Файл .gate_password не найден!"
-        return 1
-    fi
-    
-    # Создаем Caddyfile с правильным порядком handle-блоков
-    # ВАЖНО: handle без пути = catch-all, должен быть ПОСЛЕДНИМ
+    # Создаем Caddyfile БЕЗ basicauth — просто прокси
     cat > Caddyfile << EOF
 $DOMAIN {
     root * /opt/remnawave
     
-    # 1. Отдаем gate.html БЕЗ авторизации (самый специфичный маршрут)
-    handle /gate.html {
-        try_files {path}
-    }
-    
-    # 2. Корень сайта тоже БЕЗ авторизации, отдаем gate.html
+    # Корень отдаем gate.html
     handle / {
         try_files /gate.html
     }
     
-    # 3. ВСЁ остальное требует авторизации и идет в Remnawave
+    # Всё остальное сразу в Remnawave
     handle {
-        basicauth {
-            admin $HASHED_PASSWORD
-        }
         reverse_proxy remnawave:3000
     }
 }
@@ -435,23 +412,17 @@ EOF
 }
 
 setup_nginx() {
-    log_step "Настройка Nginx с защитой и SSL..."
+    log_step "Настройка Nginx с SSL..."
     cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
     unlock_apt
     apt-get update -qq
-    apt-get install -y -qq nginx certbot python3-certbot-nginx apache2-utils
+    apt-get install -y -qq nginx certbot python3-certbot-nginx
     
-    # Создаём страницу-заглушку
+    # Создаём красивую страницу-заглушку
     create_gate_page
     
-    # Генерируем .htpasswd файл (только если есть пароль)
-    if [ -f /opt/remnawave/.gate_password ]; then
-        GATE_PASSWORD=$(cat /opt/remnawave/.gate_password)
-        htpasswd -bc /opt/remnawave/.htpasswd admin "$GATE_PASSWORD"
-    fi
-    
-    # Создаём конфиг Nginx с правильными исключениями для gate.html
+    # Создаём конфиг Nginx БЕЗ auth_basic — просто прокси
     cat > /etc/nginx/sites-available/remnawave << EOF
 server {
     listen 80;
@@ -461,7 +432,6 @@ server {
     root /opt/remnawave;
     index gate.html;
 
-    # gate.html и корень — БЕЗ авторизации
     location = /gate.html {
         try_files \$uri =404;
         add_header Content-Type text/html;
@@ -471,11 +441,7 @@ server {
         try_files /gate.html =404;
     }
 
-    # ВСЁ остальное — с авторизацией
     location / {
-        auth_basic "Restricted Access";
-        auth_basic_user_file /opt/remnawave/.htpasswd;
-        
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -505,28 +471,6 @@ EOF
     fi
     
     echo "nginx" > "$PANEL_DIR/.proxy_type"
-}
-
-start_panel() {
-    log_step "$(t 'starting_containers')"
-    cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
-    
-    # ИСПРАВЛЕНИЕ 1: Безопасная проверка запуска
-    if ! docker compose up -d; then
-        log_error "Не удалось запустить контейнеры"
-        return 1
-    fi
-    
-    log_info "Ожидание запуска базы данных и приложения (15 секунд)..."
-    sleep 15
-    
-    if docker compose ps | grep -q "Up"; then
-        log_success "$(t 'panel_installed')"
-    else
-        log_error "Не удалось запустить контейнеры"
-        log_error "Проверьте логи: cd $PANEL_DIR && docker compose logs"
-        return 1
-    fi
 }
 
 install_panel() {
