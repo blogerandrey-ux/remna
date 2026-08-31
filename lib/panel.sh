@@ -167,6 +167,186 @@ setup_reverse_proxy() {
     fi
 }
 
+create_gate_page() {
+    log_info "Создание страницы-заглушки..."
+    
+    cat > "$PANEL_DIR/gate.html" << 'GATEEOF'
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remnawave Panel - Вход</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-box {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 400px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+            text-align: center;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            text-align: center;
+            font-size: 14px;
+        }
+        .form-group { margin-bottom: 20px; }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+        input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e1e1e1;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        button:hover { transform: translateY(-2px); }
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            gap: 8px;
+        }
+        .checkbox-group input {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        .checkbox-group label {
+            cursor: pointer;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>🔐 Remnawave Panel</h1>
+        <p class="subtitle">Введите пароль для доступа</p>
+        
+        <div class="error" id="errorMsg"></div>
+        
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="password">Пароль доступа</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password">
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="rememberMe" checked>
+                <label for="rememberMe">Запомнить меня</label>
+            </div>
+            
+            <button type="submit">Войти</button>
+        </form>
+    </div>
+
+    <script>
+        // Проверяем, есть ли сохранённый пароль в localStorage
+        const savedPassword = localStorage.getItem('remna_gate_password');
+        const rememberMe = localStorage.getItem('remna_remember') === 'true';
+        
+        if (savedPassword && rememberMe) {
+            // Автоматически пытаемся войти
+            attemptLogin(savedPassword);
+        }
+        
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const password = document.getElementById('password').value;
+            const remember = document.getElementById('rememberMe').checked;
+            
+            if (remember) {
+                localStorage.setItem('remna_gate_password', password);
+                localStorage.setItem('remna_remember', 'true');
+            }
+            
+            attemptLogin(password);
+        });
+        
+        function attemptLogin(password) {
+            // Проверяем пароль через запрос к защищённому ресурсу
+            fetch('/panel', {
+                method: 'HEAD',
+                headers: {
+                    'Authorization': 'Basic ' + btoa('admin:' + password)
+                }
+            })
+            .then(response => {
+                if (response.status === 401 || response.status === 403) {
+                    showError('Неверный пароль');
+                } else {
+                    // Успешно! Перенаправляем на панель
+                    window.location.href = '/panel';
+                }
+            })
+            .catch(() => {
+                showError('Ошибка подключения');
+            });
+        }
+        
+        function showError(msg) {
+            const errorEl = document.getElementById('errorMsg');
+            errorEl.textContent = msg;
+            errorEl.style.display = 'block';
+            setTimeout(() => {
+                errorEl.style.display = 'none';
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
+GATEEOF
+    
+    log_success "Страница-заглушка создана"
+}
+
 setup_caddy() {
     log_step "Настройка Caddy с защитой и SSL..."
     cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
