@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Путь для установки панели
 PANEL_DIR="/opt/remnawave"
@@ -74,6 +75,7 @@ generate_secrets() {
     sed -i "s/^METRICS_PASS=.*/METRICS_PASS=$(openssl rand -hex 64)/" .env
     sed -i "s/^WEBHOOK_SECRET_HEADER=.*/WEBHOOK_SECRET_HEADER=$(openssl rand -hex 64)/" .env
     
+    local pw
     pw=$(openssl rand -hex 24)
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pw/" .env
     sed -i "s|^DATABASE_URL=.*|DATABASE_URL=\"postgresql://postgres:${pw}@remnawave-db:5432/remnawave\"|" .env
@@ -108,33 +110,37 @@ configure_gate_password() {
     echo ""
     read -r -p "> " gate_choice
     
-    if [ "$gate_choice" = "1" ]; then
-        read -r -s -p "Введите пароль: " GATE_PASSWORD
+    if [[ "$gate_choice" == "1" ]]; then
+        read -r -s -p "Введите пароль: " GATE_PASS_1
         echo ""
-        read -r -s -p "Подтвердите пароль: " GATE_PASSWORD_CONFIRM
+        read -r -s -p "Подтвердите пароль: " GATE_PASS_2
         echo ""
         
-        if [ "$GATE_PASSWORD" != "$GATE_PASSWORD_CONFIRM" ]; then
-            log_error "Пароли не совпадают! Используйте опцию 2 для автогенерации."
-            return 1
-        fi
-        
-        if [ -z "$GATE_PASSWORD" ]; then
+        if [[ -z "${GATE_PASS_1:-}" ]]; then
             log_error "Пароль не может быть пустым!"
             return 1
         fi
         
-        echo "$GATE_PASSWORD" > /opt/remnawave/.gate_password
+        if [[ "$GATE_PASS_1" != "$GATE_PASS_2" ]]; then
+            log_error "Пароли не совпадают! Попробуйте снова."
+            return 1
+        fi
+        
+        # Сохраняем ТОЛЬКО хеш, оригинальный пароль стирается из переменных
+        echo -n "$GATE_PASS_1" | sha256sum | awk '{print $1}' > "$PANEL_DIR/.gate_hash"
+        GATE_PASS_1=""
+        GATE_PASS_2=""
         log_success "$(t 'gate_password_set')"
         
-    elif [ "$gate_choice" = "2" ]; then
-        GATE_PASSWORD=$(openssl rand -hex 16)
-        echo "$GATE_PASSWORD" > /opt/remnawave/.gate_password
+    elif [[ "$gate_choice" == "2" ]]; then
+        local auto_pass
+        auto_pass=$(openssl rand -hex 16)
+        echo -n "$auto_pass" | sha256sum | awk '{print $1}' > "$PANEL_DIR/.gate_hash"
         log_success "$(t 'gate_password_set')"
-        echo -e "${GREEN}Автоматически сгенерированный пароль: $GATE_PASSWORD${NC}"
+        echo -e "${GREEN}Автоматический пароль (сохраните его!): $auto_pass${NC}"
         
-    elif [ "$gate_choice" = "3" ]; then
-        rm -f /opt/remnawave/.gate_password
+    elif [[ "$gate_choice" == "3" ]]; then
+        rm -f "$PANEL_DIR/.gate_hash"
         log_info "$(t 'gate_password_skipped')"
         return 0
     else
@@ -150,9 +156,9 @@ setup_reverse_proxy() {
     echo ""
     read -r -p "> " proxy_choice
     
-    if [ "$proxy_choice" = "1" ]; then
+    if [[ "$proxy_choice" == "1" ]]; then
         setup_caddy
-    elif [ "$proxy_choice" = "2" ]; then
+    elif [[ "$proxy_choice" == "2" ]]; then
         setup_nginx
     else
         log_error "Неверный выбор"
@@ -160,74 +166,226 @@ setup_reverse_proxy() {
     fi
 }
 
+deploy_gate_auth_service() {
+    log_step "Развертывание сервиса аутентификации Gate..."
+    
+    if ! command -v python3 >/dev/null 2>&1; then
+        log_error "Python 3 не найден. Установите его (apt install python3) для работы защиты."
+        return 1
+    fi
+
+    local gate_hash=""
+    if [[ -f "$PANEL_DIR/.gate_hash" ]]; then
+        gate_hash=$(cat "$PANEL_DIR/.gate_hash")
+    else
+        log_warn "Файл .gate_hash не найден. Генерируем временный..."
+        gate_hash=$(openssl rand -hex 32)
+        echo "$gate_hash" > "$PANEL_DIR/.gate_hash"
+    fi
+
+    cat > /usr/local/bin/remna-gate.py << 'PYTHON_EOF'
+#!/usr/bin/env python3
+import os, sys, json, hashlib, urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+EXPECTED_HASH = os.environ.get('REMNA_GATE_HASH', '')
+
+class GateHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # Тихий режим
+
+    def do_GET(self):
+        if self.path == '/validate':
+            cookie = self.headers.get('Cookie', '')
+            auth_val = None
+            for part in cookie.split(';'):
+                if part.strip().startswith('remna_auth='):
+                    auth_val = part.strip().split('=', 1)[1]
+                    break
+            
+            if auth_val and auth_val == EXPECTED_HASH:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'OK')
+            else:
+                self.send_response(401)
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == '/login':
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            
+            password = None
+            for item in post_data.split('&'):
+                if item.startswith('password='):
+                    password = urllib.parse.unquote(item.split('=', 1)[1].replace('+', ' '))
+                    break
+            
+            if password:
+                hashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
+                if hashed == EXPECTED_HASH:
+                    self.send_response(200)
+                    self.send_header('Set-Cookie', f'remna_auth={EXPECTED_HASH}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800')
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "success"}).encode('utf-8'))
+                else:
+                    self.send_response(401)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "error"}).encode('utf-8'))
+            else:
+                self.send_response(400)
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+if __name__ == '__main__':
+    if not EXPECTED_HASH:
+        sys.exit(1)
+    server = HTTPServer(('127.0.0.1', 8088), GateHandler)
+    server.serve_forever()
+PYTHON_EOF
+
+    if ! chmod +x /usr/local/bin/remna-gate.py; then
+        log_error "Не удалось сделать скрипт исполняемым"
+        return 1
+    fi
+
+    cat > /etc/systemd/system/remna-gate.service << EOF
+[Unit]
+Description=Remnawave Gate Auth Service
+After=network.target
+
+[Service]
+Type=simple
+Environment=REMNA_GATE_HASH=$gate_hash
+ExecStart=/usr/bin/python3 /usr/local/bin/remna-gate.py
+Restart=always
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    if ! systemctl daemon-reload; then
+        log_error "Не удалось перезагрузить systemd daemon"
+        return 1
+    fi
+
+    if ! systemctl enable --now remna-gate.service; then
+        log_error "Не удалось запустить сервис remna-gate"
+        return 1
+    fi
+
+    log_success "Сервис проверки пароля запущен"
+}
+
 create_gate_page() {
-    log_info "Создание страницы-заглушки..."
+    log_info "Создание страницы-заглушки Gate..."
     
     cat > "$PANEL_DIR/gate.html" << 'GATEEOF'
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="3; url=/panel">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Remnawave Panel</title>
+    <title>Remnawave Access Gate</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .box {
-            background: white;
-            padding: 40px;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            text-align: center;
-            width: 100%;
-            max-width: 400px;
-        }
-        h1 { color: #333; margin-bottom: 15px; font-size: 28px; }
-        p { color: #666; margin-bottom: 25px; font-size: 16px; }
-        .btn {
-            display: inline-block;
-            padding: 14px 30px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            transition: transform 0.2s;
-        }
-        .btn:hover { transform: translateY(-2px); }
+        :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #3b82f6; --error: #ef4444; }
+        body { margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .gate-card { background: var(--card); padding: 2.5rem; border-radius: 12px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.3); width: 100%; max-width: 400px; text-align: center; }
+        .gate-card h1 { margin: 0 0 1.5rem 0; font-size: 1.5rem; font-weight: 600; }
+        .input-group { margin-bottom: 1.5rem; text-align: left; }
+        .input-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: #94a3b8; }
+        .input-group input { width: 100%; padding: 0.75rem; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: white; font-size: 1rem; box-sizing: border-box; outline: none; transition: border-color 0.2s; }
+        .input-group input:focus { border-color: var(--accent); }
+        .btn { width: 100%; padding: 0.75rem; background: var(--accent); color: white; border: none; border-radius: 6px; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background 0.2s; }
+        .btn:hover { background: #2563eb; }
+        .btn:disabled { background: #64748b; cursor: not-allowed; }
+        .error-msg { color: var(--error); font-size: 0.875rem; margin-top: 1rem; display: none; }
     </style>
 </head>
 <body>
-    <div class="box">
-        <h1>🔐 Remnawave Panel</h1>
-        <p>Перенаправление на страницу входа...</p>
-        <a href="/panel" class="btn">Перейти к входу</a>
+    <div class="gate-card">
+        <h1>🔒 Remnawave Panel</h1>
+        <form id="gateForm">
+            <div class="input-group">
+                <label for="password">Access Password</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password" autofocus>
+            </div>
+            <button type="submit" class="btn">Unlock</button>
+            <div id="errorMsg" class="error-msg">Invalid password. Please try again.</div>
+        </form>
     </div>
+    <script>
+        document.getElementById('gateForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const pwd = document.getElementById('password').value;
+            const btn = e.target.querySelector('.btn');
+            const err = document.getElementById('errorMsg');
+            
+            btn.disabled = true;
+            btn.textContent = 'Checking...';
+            err.style.display = 'none';
+
+            try {
+                const res = await fetch('/auth_login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'password=' + encodeURIComponent(pwd)
+                });
+                
+                if (res.ok) {
+                    window.location.reload();
+                } else {
+                    err.style.display = 'block';
+                    document.getElementById('password').value = '';
+                    document.getElementById('password').focus();
+                }
+            } catch (e) {
+                err.textContent = 'Connection error';
+                err.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Unlock';
+            }
+        });
+    </script>
 </body>
 </html>
 GATEEOF
     
-    log_success "Страница-заглушка создана"
+    log_success "Страница-заглушка обновлена"
 }
 
 setup_caddy() {
-    log_step "Настройка Caddy с SSL..."
+    log_step "Настройка Caddy с SSL и Gate-защитой..."
     cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
-    SERVER_IP=$(curl -s ifconfig.me)
-    DOMAIN_IP=$(getent ahosts "$DOMAIN" | awk '{print $1}' | head -n 1)
+    local domain="$DOMAIN"
+    if [[ -z "${domain:-}" ]]; then
+        if [[ -f "$PANEL_DIR/.domain" ]]; then
+            domain=$(cat "$PANEL_DIR/.domain")
+        else
+            log_error "Домен не найден. Настройте домен сначала."
+            return 1
+        fi
+    fi
+
+    local server_ip
+    server_ip=$(curl -s ifconfig.me)
+    local domain_ip
+    domain_ip=$(getent ahosts "$domain" | awk '{print $1}' | head -n 1)
     
-    if [ "$SERVER_IP" != "$DOMAIN_IP" ]; then
-        log_warn "ВНИМАНИЕ: IP сервера ($SERVER_IP) не совпадает с IP домена ($DOMAIN_IP)!"
+    if [[ "$server_ip" != "$domain_ip" ]]; then
+        log_warn "ВНИМАНИЕ: IP сервера ($server_ip) не совпадает с IP домена ($domain_ip)!"
         log_warn "Caddy не сможет получить SSL, пока DNS-запись не обновится."
         echo ""
         read -r -p "Продолжить установку всё равно? (y/n): " continue_caddy
@@ -238,15 +396,32 @@ setup_caddy() {
     fi
 
     create_gate_page
+    deploy_gate_auth_service
     
     cat > Caddyfile << EOF
-$DOMAIN {
+$domain {
     root * /opt/remnawave
     
-    handle / {
-        try_files /gate.html
+    handle_path /.well-known/acme-challenge/* {
+        root * /var/www/html
+        file_server
     }
-    
+
+    handle /auth_login {
+        reverse_proxy 127.0.0.1:8088
+    }
+
+    handle /gate.html {
+        file_server
+    }
+
+    @needs_auth {
+        not header_regexp Cookie .*remna_auth=[a-f0-9]{64}.*
+    }
+    handle @needs_auth {
+        rewrite * /gate.html
+    }
+
     handle {
         reverse_proxy remnawave:3000
     }
@@ -255,7 +430,7 @@ EOF
     
     docker rm -f caddy 2>/dev/null || true
     
-    docker run -d --name caddy \
+    if ! docker run -d --name caddy \
         --restart unless-stopped \
         --network remnawave-network \
         -p 80:80 \
@@ -263,7 +438,10 @@ EOF
         -v "$PANEL_DIR/Caddyfile:/etc/caddy/Caddyfile" \
         -v caddy_data:/data \
         -v caddy_config:/config \
-        caddy:2-alpine
+        caddy:2-alpine; then
+        log_error "Не удалось запустить Caddy"
+        return 1
+    fi
     
     log_info "Ожидаем получения SSL-сертификата (до 30 секунд)..."
     sleep 15
@@ -273,41 +451,55 @@ EOF
         docker logs caddy --tail 15
         return 1
     else
-        log_success "Caddy успешно запущен!"
+        log_success "Caddy успешно запущен с кастомной Gate-защитой!"
     fi
     
     echo "caddy" > "$PANEL_DIR/.proxy_type"
 }
 
 setup_nginx() {
-    log_step "Настройка Nginx с SSL..."
+    log_step "Настройка Nginx с SSL и Gate-защитой..."
     cd "$PANEL_DIR" || { log_error "Не удалось перейти в $PANEL_DIR"; return 1; }
     
     unlock_apt
-    apt-get update -qq
-    apt-get install -y -qq nginx certbot python3-certbot-nginx
+    if ! apt-get update -qq; then
+        log_error "Ошибка обновления пакетов"
+        return 1
+    fi
+    # apache2-utils больше не нужен, так как мы не используем htpasswd
+    if ! apt-get install -y -qq nginx certbot python3-certbot-nginx; then
+        log_error "Ошибка установки Nginx или Certbot"
+        return 1
+    fi
     
     create_gate_page
+    deploy_gate_auth_service
     
+    local domain="$DOMAIN"
+    if [[ -z "${domain:-}" ]]; then
+        if [[ -f "$PANEL_DIR/.domain" ]]; then
+            domain=$(cat "$PANEL_DIR/.domain")
+        else
+            log_error "Домен не найден. Настройте домен сначала."
+            return 1
+        fi
+    fi
+
     cat > /etc/nginx/sites-available/remnawave << EOF
 server {
     listen 80;
     listen [::]:80;
-    server_name $DOMAIN;
-    
-    root /opt/remnawave;
-    index gate.html;
+    server_name $domain;
 
-    location = /gate.html {
-        try_files \$uri =404;
-        add_header Content-Type text/html;
-    }
-    
-    location = / {
-        try_files /gate.html =404;
+    location /.well-known/acme-challenge/ {
+        auth_request off;
+        root /var/www/html;
     }
 
     location / {
+        auth_request /auth_validate;
+        error_page 401 = /gate.html;
+        
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -317,6 +509,27 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location = /gate.html {
+        root $PANEL_DIR;
+        internal;
+        add_header Content-Type text/html;
+    }
+
+    location = /auth_validate {
+        internal;
+        proxy_pass http://127.0.0.1:8088/validate;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Cookie \$http_cookie;
+    }
+
+    location = /auth_login {
+        proxy_pass http://127.0.0.1:8088/login;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     }
 }
 EOF
@@ -328,12 +541,15 @@ EOF
         return 1
     fi
     
-    systemctl restart nginx
+    if ! systemctl restart nginx; then
+        log_error "Не удалось перезапустить Nginx"
+        return 1
+    fi
     
-    if ! certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email; then
+    if ! certbot --nginx -d "$domain" --non-interactive --agree-tos --register-unsafely-without-email; then
         log_warn "Certbot завершился с ошибкой. Проверьте DNS и запустите certbot вручную."
     else
-        log_success "Nginx установлен и настроен с SSL"
+        log_success "Nginx установлен с SSL и кастомной Gate-защитой (без браузерных окон)"
     fi
     
     echo "nginx" > "$PANEL_DIR/.proxy_type"
@@ -447,6 +663,13 @@ uninstall_panel() {
         docker rm -f caddy 2>/dev/null || true
     fi
     
+    # Очистка сервиса Gate
+    log_info "Cleaning up Gate service..."
+    systemctl disable --now remna-gate.service 2>/dev/null || true
+    rm -f /etc/systemd/system/remna-gate.service
+    rm -f /usr/local/bin/remna-gate.py
+    systemctl daemon-reload 2>/dev/null || true
+    
     cd / || exit 1
     rm -rf "$PANEL_DIR"
     
@@ -490,6 +713,7 @@ backup_db() {
     cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
     mkdir -p "$PANEL_DIR/backups"
     
+    local DB_CONTAINER
     DB_CONTAINER=$(docker compose ps -q remnawave-db 2>/dev/null || true)
     
     if [ -z "$DB_CONTAINER" ]; then
@@ -498,7 +722,7 @@ backup_db() {
         return 1
     fi
     
-    BACKUP_FILE="$PANEL_DIR/backups/backup_$(date +%Y%m%d_%H%M%S).sql"
+    local BACKUP_FILE="$PANEL_DIR/backups/backup_$(date +%Y%m%d_%H%M%S).sql"
     
     if ! docker exec "$DB_CONTAINER" pg_dump -U postgres remnawave > "$BACKUP_FILE" 2>/dev/null; then
         log_error "Backup failed / Ошибка создания бэкапа"
@@ -514,8 +738,9 @@ show_login_info() {
     log_step "Информация о панели / Panel Information"
     
     if [ -f "/opt/remnawave/.domain" ]; then
-        DOMAIN=$(cat /opt/remnawave/.domain)
-        echo -e "${CYAN}URL панели / Panel URL:${NC} https://$DOMAIN"
+        local local_domain
+        local_domain=$(cat /opt/remnawave/.domain)
+        echo -e "${CYAN}URL панели / Panel URL:${NC} https://$local_domain"
     else
         echo -e "${YELLOW}Домен не найден. Возможно, панель не установлена.${NC}"
     fi
@@ -540,12 +765,13 @@ reset_admin_password() {
     echo "Затем выберите опцию 'Reset superadmin' из меню."
     echo ""
     echo -e "${CYAN}После сброса:${NC}"
-    LOCAL_DOMAIN=$(cat /opt/remnawave/.domain 2>/dev/null || echo 'your-domain.com')
-    echo "1. Откройте панель: https://$LOCAL_DOMAIN"
+    local local_domain
+    local_domain=$(cat /opt/remnawave/.domain 2>/dev/null || echo 'your-domain.com')
+    echo "1. Откройте панель: https://$local_domain"
     echo "2. Создайте нового супер-админа с новым паролем"
     echo ""
     read -r -p "Нажмите Enter для возврата в меню... / Press Enter to return to menu..."
 }
 
-export -f unlock_apt install_docker download_panel_files generate_secrets configure_domain configure_gate_password create_gate_page setup_reverse_proxy setup_caddy setup_nginx start_panel install_panel update_panel uninstall_panel view_logs check_status backup_db show_login_info reset_admin_password
+export -f unlock_apt install_docker download_panel_files generate_secrets configure_domain configure_gate_password setup_reverse_proxy deploy_gate_auth_service create_gate_page setup_caddy setup_nginx start_panel install_panel update_panel uninstall_panel view_logs check_status backup_db show_login_info reset_admin_password
 export PANEL_DIR
