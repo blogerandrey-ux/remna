@@ -179,29 +179,48 @@ setup_caddy() {
         log_warn "Caddy не сможет получить SSL, пока DNS-запись не обновится."
         echo ""
         read -r -p "Продолжить установку всё равно? (y/n): " continue_caddy
-        if [ "$continue_caddy" != "y" ] && [ "$continue_caddy" != "Y" ]; then
+        if [[ "$continue_caddy" != "y" && "$continue_caddy" != "Y" ]]; then
             log_info "Установка прервана. Настройте DNS и запустите скрипт снова."
             return 1
         fi
     fi
 
-    if [ -f /opt/remnawave/.gate_password ]; then
-        GATE_PASSWORD=$(cat /opt/remnawave/.gate_password)
-        cat > Caddyfile << EOF
-{$DOMAIN} {
-    basicauth /* {
-        admin {$GATE_PASSWORD}
+    # Создаём красивую страницу-заглушку
+    create_gate_page
+    
+    # Генерируем Caddyfile БЕЗ фигурных скобок вокруг домена
+    cat > Caddyfile << EOF
+$DOMAIN {
+    root * /opt/remnawave
+    
+    # Главная страница — без авторизации (наша заглушка)
+    handle / {
+        try_files {path} /gate.html
     }
-    reverse_proxy remnawave:3000
+    
+    # Всё остальное — с авторизацией
+    handle /panel* {
+        basicauth {
+            admin $(cat /opt/remnawave/.gate_password)
+        }
+        reverse_proxy remnawave:3000
+    }
+    
+    handle /api* {
+        basicauth {
+            admin $(cat /opt/remnawave/.gate_password)
+        }
+        reverse_proxy remnawave:3000
+    }
+    
+    handle /* {
+        basicauth {
+            admin $(cat /opt/remnawave/.gate_password)
+        }
+        reverse_proxy remnawave:3000
+    }
 }
 EOF
-    else
-        cat > Caddyfile << EOF
-{$DOMAIN} {
-    reverse_proxy remnawave:3000
-}
-EOF
-    fi
     
     docker rm -f caddy 2>/dev/null || true
     
@@ -211,11 +230,12 @@ EOF
         -p 80:80 \
         -p 443:443 \
         -v "$PANEL_DIR/Caddyfile:/etc/caddy/Caddyfile" \
+        -v "$PANEL_DIR/gate.html:/srv/gate.html" \
         -v caddy_data:/data \
         -v caddy_config:/config \
         caddy:2-alpine
     
-    log_info "Ожидаем получения SSL-сертификата (до30 секунд)..."
+    log_info "Ожидаем получения SSL-сертификата (до 30 секунд)..."
     sleep 15
     
     if ! docker ps | grep -q caddy; then
@@ -226,7 +246,6 @@ EOF
         log_success "Caddy успешно запущен!"
     fi
     
-    # ИСПРАВЛЕНИЕ 5: Сохраняем тип прокси для симметричного удаления
     echo "caddy" > "$PANEL_DIR/.proxy_type"
 }
 
