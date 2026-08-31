@@ -368,34 +368,40 @@ setup_caddy() {
     # Создаём красивую страницу-заглушку
     create_gate_page
     
-    # Генерируем Caddyfile БЕЗ фигурных скобок вокруг домена
+    # Генерируем bcrypt-хэш для пароля (Caddy требует именно хэш, не plain-текст!)
+    log_info "Генерация хэша пароля для Caddy..."
+    if [ -f /opt/remnawave/.gate_password ]; then
+        PLAIN_PASSWORD=$(cat /opt/remnawave/.gate_password)
+        HASHED_PASSWORD=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext "$PLAIN_PASSWORD" 2>/dev/null | tail -n 1)
+        if [ -z "$HASHED_PASSWORD" ]; then
+            log_error "Не удалось сгенерировать хэш пароля"
+            return 1
+        fi
+    else
+        log_error "Файл .gate_password не найден!"
+        return 1
+    fi
+    
+    # Создаем Caddyfile с правильным порядком handle-блоков
+    # ВАЖНО: handle без пути = catch-all, должен быть ПОСЛЕДНИМ
     cat > Caddyfile << EOF
 $DOMAIN {
     root * /opt/remnawave
     
-    # Главная страница — без авторизации (наша заглушка)
+    # 1. Отдаем gate.html БЕЗ авторизации (самый специфичный маршрут)
+    handle /gate.html {
+        try_files {path}
+    }
+    
+    # 2. Корень сайта тоже БЕЗ авторизации, отдаем gate.html
     handle / {
-        try_files {path} /gate.html
+        try_files /gate.html
     }
     
-    # Всё остальное — с авторизацией
-    handle /panel* {
+    # 3. ВСЁ остальное требует авторизации и идет в Remnawave
+    handle {
         basicauth {
-            admin $(cat /opt/remnawave/.gate_password)
-        }
-        reverse_proxy remnawave:3000
-    }
-    
-    handle /api* {
-        basicauth {
-            admin $(cat /opt/remnawave/.gate_password)
-        }
-        reverse_proxy remnawave:3000
-    }
-    
-    handle /* {
-        basicauth {
-            admin $(cat /opt/remnawave/.gate_password)
+            admin $HASHED_PASSWORD
         }
         reverse_proxy remnawave:3000
     }
@@ -410,7 +416,6 @@ EOF
         -p 80:80 \
         -p 443:443 \
         -v "$PANEL_DIR/Caddyfile:/etc/caddy/Caddyfile" \
-        -v "$PANEL_DIR/gate.html:/srv/gate.html" \
         -v caddy_data:/data \
         -v caddy_config:/config \
         caddy:2-alpine
@@ -437,53 +442,52 @@ setup_nginx() {
     apt-get update -qq
     apt-get install -y -qq nginx certbot python3-certbot-nginx apache2-utils
     
+    # Создаём страницу-заглушку
+    create_gate_page
+    
+    # Генерируем .htpasswd файл (только если есть пароль)
     if [ -f /opt/remnawave/.gate_password ]; then
         GATE_PASSWORD=$(cat /opt/remnawave/.gate_password)
         htpasswd -bc /opt/remnawave/.htpasswd admin "$GATE_PASSWORD"
-        
-        cat > /etc/nginx/sites-available/remnawave << EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN;
-
-    auth_basic "Restricted Access";
-    auth_basic_user_file /opt/remnawave/.htpasswd;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-    else
-        cat > /etc/nginx/sites-available/remnawave << EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
     fi
+    
+    # Создаём конфиг Nginx с правильными исключениями для gate.html
+    cat > /etc/nginx/sites-available/remnawave << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+    
+    root /opt/remnawave;
+    index gate.html;
+
+    # gate.html и корень — БЕЗ авторизации
+    location = /gate.html {
+        try_files \$uri =404;
+        add_header Content-Type text/html;
+    }
+    
+    location = / {
+        try_files /gate.html =404;
+    }
+
+    # ВСЁ остальное — с авторизацией
+    location / {
+        auth_basic "Restricted Access";
+        auth_basic_user_file /opt/remnawave/.htpasswd;
+        
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
     
     ln -sf /etc/nginx/sites-available/remnawave /etc/nginx/sites-enabled/remnawave
     
@@ -500,7 +504,6 @@ EOF
         log_success "Nginx установлен и настроен с SSL"
     fi
     
-    # ИСПРАВЛЕНИЕ 5: Сохраняем тип прокси для симметричного удаления
     echo "nginx" > "$PANEL_DIR/.proxy_type"
 }
 
