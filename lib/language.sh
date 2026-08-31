@@ -9,7 +9,7 @@ detect_language() {
     echo "  1) English"
     echo "  2) Русский"
     echo ""
-    read -p "> " lang_choice
+    read -r -p "> " lang_choice
     
     if [ "$lang_choice" = "2" ]; then
         LANG_CODE="ru"
@@ -45,6 +45,8 @@ t() {
             "skip_gate_password") echo "Пропустить защиту (панель будет доступна без пароля)" ;;
             "gate_password_set") echo "Пароль-заглушка успешно установлен" ;;
             "gate_password_skipped") echo "Защита паролем пропущена" ;;
+            "gate_service_started") echo "Сервис проверки пароля запущен" ;;
+            "error_python3_missing") echo "Python 3 не найден. Установите его (apt install python3) для работы защиты." ;;
             "exit") echo "Выход" ;;
             "select_option") echo "Выберите опцию" ;;
             "invalid_option") echo "Неверная опция, попробуйте снова" ;;
@@ -103,6 +105,8 @@ t() {
             "skip_gate_password") echo "Skip protection (panel will be accessible without password)" ;;
             "gate_password_set") echo "Gate password successfully set" ;;
             "gate_password_skipped") echo "Password protection skipped" ;;
+            "gate_service_started") echo "Password verification service started" ;;
+            "error_python3_missing") echo "Python 3 not found. Please install it for Gate protection." ;;
             "exit") echo "Exit" ;;
             "select_option") echo "Select option" ;;
             "invalid_option") echo "Invalid option, try again" ;;
