@@ -398,30 +398,37 @@ setup_caddy() {
     create_gate_page
     deploy_gate_auth_service
     
+    # Генерируем исправленный Caddyfile
     cat > Caddyfile << EOF
 $domain {
-    root * /opt/remnawave
-    
+    # 1. ACME Challenge (без авторизации)
     handle_path /.well-known/acme-challenge/* {
         root * /var/www/html
         file_server
     }
 
+    # 2. API для проверки пароля (прокси на Python)
     handle /auth_login {
         reverse_proxy 127.0.0.1:8088
     }
 
+    # 3. Страница заглушки (ЯВНО указываем root, чтобы file_server нашел файл)
     handle /gate.html {
+        root * $PANEL_DIR
         file_server
     }
 
+    # 4. ПРОВЕРКА: Если в Cookie НЕТ валидного хеша, переписываем запрос на /gate.html
+    # ИСПРАВЛЕНО: добавлено имя 'has_auth_cookie' для корректной работы header_regexp в Caddy v2
     @needs_auth {
-        not header_regexp Cookie .*remna_auth=[a-f0-9]{64}.*
+        not header_regexp has_auth_cookie Cookie .*remna_auth=[a-f0-9]{64}.*
     }
+    
     handle @needs_auth {
         rewrite * /gate.html
     }
 
+    # 5. Всё остальное проксируем в Remnawave (если cookie есть, запрос попадет сюда)
     handle {
         reverse_proxy remnawave:3000
     }
@@ -443,14 +450,18 @@ EOF
         return 1
     fi
     
-    log_info "Ожидаем получения SSL-сертификата (до 30 секунд)..."
+    log_info "Ожидаем получения SSL-сертификата и применения конфига (до 30 секунд)..."
     sleep 15
     
     if ! docker ps | grep -q caddy; then
         log_error "Caddy не запустился! Причина:"
-        docker logs caddy --tail 15
+        docker logs caddy --tail 20
         return 1
     else
+        # Проверяем, нет ли ошибок валидации в логах Caddy
+        if docker logs caddy 2>&1 | grep -qi "error"; then
+            log_warn "Caddy запущен, но в логах есть предупреждения. Проверьте 'docker logs caddy'."
+        fi
         log_success "Caddy успешно запущен с кастомной Gate-защитой!"
     fi
     
