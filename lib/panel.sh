@@ -374,7 +374,7 @@ setup_caddy() {
         if [[ -f "$PANEL_DIR/.domain" ]]; then
             domain=$(cat "$PANEL_DIR/.domain")
         else
-            log_error "Домен не найден. Настройте домен сначала."
+            log_error "Домен не найден."
             return 1
         fi
     fi
@@ -386,11 +386,8 @@ setup_caddy() {
     
     if [[ "$server_ip" != "$domain_ip" ]]; then
         log_warn "ВНИМАНИЕ: IP сервера ($server_ip) не совпадает с IP домена ($domain_ip)!"
-        log_warn "Caddy не сможет получить SSL, пока DNS-запись не обновится."
-        echo ""
-        read -r -p "Продолжить установку всё равно? (y/n): " continue_caddy
+        read -r -p "Продолжить всё равно? (y/n): " continue_caddy
         if [[ "$continue_caddy" != "y" && "$continue_caddy" != "Y" ]]; then
-            log_info "Установка прервана. Настройте DNS и запустите скрипт снова."
             return 1
         fi
     fi
@@ -398,52 +395,45 @@ setup_caddy() {
     create_gate_page
     deploy_gate_auth_service
     
-    # Генерируем ИСПРАВЛЕННЫЙ Caddyfile
     cat > Caddyfile << EOF
 $domain {
-    # 1. ACME Challenge (без авторизации)
+    root * /opt/remnawave
+    
     handle_path /.well-known/acme-challenge/* {
         root * /var/www/html
         file_server
     }
-
-    # 2. API для проверки пароля (прокси на Python)
+    
     handle /auth_login {
-        reverse_proxy 127.0.0.1:8088
-    }
-
-    # 3. Прямой запрос к gate.html (отдаем файл)
-    handle /gate.html {
-        root * $PANEL_DIR
-        file_server
-    }
-
-    # 4. Если есть валидная cookie - проксируем в Remnawave
-    @has_valid_cookie {
-        header_regexp valid_cookie Cookie .*remna_auth=[a-f0-9]{64}.*
+        reverse_proxy localhost:8088
     }
     
-    handle @has_valid_cookie {
-        reverse_proxy remnawave:3000
-    }
-
-    # 5. Если cookie нет - переписываем запрос на gate.html и ОТДАЕМ его
-    handle {
-        root * $PANEL_DIR
-        try_files /gate.html
+    handle /gate.html {
         file_server
     }
+    
+    @gate {
+        not header Cookie *remna_auth*
+    }
+    handle @gate {
+        rewrite * /gate.html
+        file_server
+    }
+    
+    reverse_proxy remnawave:3000
 }
 EOF
     
     docker rm -f caddy 2>/dev/null || true
     
+    # ВАЖНО: добавлен volume -v /opt/remnawave:/opt/remnawave
     if ! docker run -d --name caddy \
         --restart unless-stopped \
         --network remnawave-network \
         -p 80:80 \
         -p 443:443 \
         -v "$PANEL_DIR/Caddyfile:/etc/caddy/Caddyfile" \
+        -v /opt/remnawave:/opt/remnawave \
         -v caddy_data:/data \
         -v caddy_config:/config \
         caddy:2-alpine; then
@@ -451,17 +441,15 @@ EOF
         return 1
     fi
     
-    log_info "Ожидаем получения SSL-сертификата и применения конфига (до 30 секунд)..."
-    sleep 15
+    sleep 10
     
     if ! docker ps | grep -q caddy; then
-        log_error "Caddy не запустился! Причина:"
+        log_error "Caddy не запустился:"
         docker logs caddy --tail 20
         return 1
-    else
-        log_success "Caddy успешно запущен с кастомной Gate-защитой!"
     fi
     
+    log_success "Caddy запущен!"
     echo "caddy" > "$PANEL_DIR/.proxy_type"
 }
 
