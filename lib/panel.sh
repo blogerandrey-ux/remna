@@ -398,12 +398,9 @@ setup_caddy() {
     create_gate_page
     deploy_gate_auth_service
     
-    # Генерируем исправленный Caddyfile
+    # Генерируем Caddyfile с правильным порядком обработки
     cat > Caddyfile << EOF
 $domain {
-    # Глобальный root для всего сайта
-    root * $PANEL_DIR
-    
     # 1. ACME Challenge (без авторизации)
     handle_path /.well-known/acme-challenge/* {
         root * /var/www/html
@@ -415,19 +412,25 @@ $domain {
         reverse_proxy 127.0.0.1:8088
     }
 
-    # 3. ПРОВЕРКА: Если в Cookie НЕТ валидного хеша, показываем заглушку
-    @needs_auth {
-        not header_regexp has_auth_cookie Cookie .*remna_auth=[a-f0-9]{64}.*
-    }
-    
-    handle @needs_auth {
-        rewrite * /gate.html
-        file_server
+    # 3. Отдаем gate.html как статический файл
+    handle /gate.html {
+        root * $PANEL_DIR
+        try_files {path}
     }
 
-    # 4. Всё остальное проксируем в Remnawave (если cookie есть)
-    handle {
+    # 4. Корневой путь - проверяем cookie и либо показываем gate, либо проксируем
+    @has_valid_cookie {
+        header_regexp valid_cookie Cookie .*remna_auth=[a-f0-9]{64}.*
+    }
+    
+    handle @has_valid_cookie {
         reverse_proxy remnawave:3000
+    }
+
+    # 5. Если cookie нет - показываем заглушку
+    handle {
+        root * $PANEL_DIR
+        try_files /gate.html
     }
 }
 EOF
