@@ -395,38 +395,48 @@ setup_caddy() {
     create_gate_page
     deploy_gate_auth_service
     
+    # ИСПРАВЛЕННЫЙ Caddyfile
     cat > Caddyfile << EOF
 $domain {
+    # Глобальный корень для всех file_server ниже
     root * /opt/remnawave
     
+    # 1. ACME Challenge (без авторизации)
     handle_path /.well-known/acme-challenge/* {
         root * /var/www/html
         file_server
     }
     
+    # 2. API проверки пароля (ИСПРАВЛЕНО: 127.0.0.1 вместо localhost)
     handle /auth_login {
-        reverse_proxy localhost:8088
+        reverse_proxy 127.0.0.1:8088
     }
     
+    # 3. Прямой доступ к файлу заглушки
     handle /gate.html {
         file_server
     }
     
-    @gate {
+    # 4. ЛОГИКА ПЕРЕХОДА: Если в Cookie НЕТ remna_auth
+    @needs_gate {
         not header Cookie *remna_auth*
     }
-    handle @gate {
+    
+    handle @needs_gate {
+        # Переписываем любой запрос (например, /) на /gate.html
         rewrite * /gate.html
+        # И отдаем этот файл
         file_server
     }
     
+    # 5. Если Cookie ЕСТЬ (блок @needs_gate не сработал), идем напрямую в панель
     reverse_proxy remnawave:3000
 }
 EOF
     
     docker rm -f caddy 2>/dev/null || true
     
-    # ВАЖНО: добавлен volume -v /opt/remnawave:/opt/remnawave
+    # Монтируем /opt/remnawave, чтобы Caddy видел gate.html
     if ! docker run -d --name caddy \
         --restart unless-stopped \
         --network remnawave-network \
@@ -449,7 +459,7 @@ EOF
         return 1
     fi
     
-    log_success "Caddy запущен!"
+    log_success "Caddy запущен с корректной Gate-защитой!"
     echo "caddy" > "$PANEL_DIR/.proxy_type"
 }
 
