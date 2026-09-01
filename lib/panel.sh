@@ -401,6 +401,9 @@ setup_caddy() {
     # Генерируем исправленный Caddyfile
     cat > Caddyfile << EOF
 $domain {
+    # Глобальный root для всего сайта
+    root * $PANEL_DIR
+    
     # 1. ACME Challenge (без авторизации)
     handle_path /.well-known/acme-challenge/* {
         root * /var/www/html
@@ -412,23 +415,17 @@ $domain {
         reverse_proxy 127.0.0.1:8088
     }
 
-    # 3. Страница заглушки (ЯВНО указываем root, чтобы file_server нашел файл)
-    handle /gate.html {
-        root * $PANEL_DIR
-        file_server
-    }
-
-    # 4. ПРОВЕРКА: Если в Cookie НЕТ валидного хеша, переписываем запрос на /gate.html
-    # ИСПРАВЛЕНО: добавлено имя 'has_auth_cookie' для корректной работы header_regexp в Caddy v2
+    # 3. ПРОВЕРКА: Если в Cookie НЕТ валидного хеша, показываем заглушку
     @needs_auth {
         not header_regexp has_auth_cookie Cookie .*remna_auth=[a-f0-9]{64}.*
     }
     
     handle @needs_auth {
         rewrite * /gate.html
+        file_server
     }
 
-    # 5. Всё остальное проксируем в Remnawave (если cookie есть, запрос попадет сюда)
+    # 4. Всё остальное проксируем в Remnawave (если cookie есть)
     handle {
         reverse_proxy remnawave:3000
     }
@@ -458,10 +455,6 @@ EOF
         docker logs caddy --tail 20
         return 1
     else
-        # Проверяем, нет ли ошибок валидации в логах Caddy
-        if docker logs caddy 2>&1 | grep -qi "error"; then
-            log_warn "Caddy запущен, но в логах есть предупреждения. Проверьте 'docker logs caddy'."
-        fi
         log_success "Caddy успешно запущен с кастомной Gate-защитой!"
     fi
     
