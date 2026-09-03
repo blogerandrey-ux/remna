@@ -38,28 +38,18 @@ show_main_menu() {
                 ;;
             2)
                 update_panel
-                echo ""
-                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             3)
                 uninstall_panel
-                echo ""
-                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             4)
                 view_logs
-                echo ""
-                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             5)
                 check_status
-                echo ""
-                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             6)
                 backup_db
-                echo ""
-                read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
                 ;;
             7)
                 show_login_info
@@ -95,26 +85,22 @@ show_main_menu() {
 }
 
 update_panel() {
-    log_step "Updating Remnawave Panel..."
+    log_step "Обновление Remnawave Panel..."
     
-    # ИСПРАВЛЕНИЕ: Проверка перед cd
     if [ ! -d "$PANEL_DIR" ]; then
         log_error "Panel not installed / Панель не установлена"
         read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
         return 1
     fi
     
-    # ИСПРАВЛЕНИЕ: Безопасный cd (SC2164)
     cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
     
-    # ИСПРАВЛЕНИЕ: Безопасная проверка curl (совместимо с set -e)
     if ! curl -sL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml; then
         log_error "Failed to download docker-compose.yml"
         read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
         return 1
     fi
     
-    # Перезапускаем контейнеры с проверкой ошибок
     if ! docker compose pull; then
         log_error "Failed to pull images"
         read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
@@ -139,6 +125,7 @@ uninstall_panel() {
     
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         log_info "Cancelled / Отменено"
+        read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
         return 0
     fi
     
@@ -147,7 +134,7 @@ uninstall_panel() {
         docker compose down || true
     fi
     
-    # ИСПРАВЛЕНИЕ: Симметричное удаление прокси (читаем .proxy_type, созданный в panel.sh)
+    # Симметричное удаление прокси
     if [ -f "$PANEL_DIR/.proxy_type" ]; then
         PROXY_TYPE=$(cat "$PANEL_DIR/.proxy_type")
         if [ "$PROXY_TYPE" = "nginx" ]; then
@@ -161,11 +148,16 @@ uninstall_panel() {
             rm -rf /etc/caddy 2>/dev/null || true
         fi
     else
-        # Fallback на случай очень старых установок без .proxy_type
         docker rm -f caddy 2>/dev/null || true
     fi
     
-    # ИСПРАВЛЕНИЕ: Безопасный cd /
+    # ИСПРАВЛЕНИЕ: Полная очистка сервиса Gate (был забыт!)
+    log_info "Cleaning up Gate auth service..."
+    systemctl disable --now remna-gate.service 2>/dev/null || true
+    rm -f /etc/systemd/system/remna-gate.service
+    rm -f /usr/local/bin/remna-gate.py
+    systemctl daemon-reload 2>/dev/null || true
+    
     cd / || exit 1
     rm -rf "$PANEL_DIR"
     
@@ -207,7 +199,6 @@ backup_db() {
     fi
     
     cd "$PANEL_DIR" || { log_error "Cannot access $PANEL_DIR"; return 1; }
-    
     mkdir -p "$PANEL_DIR/backups"
     
     DB_CONTAINER=$(docker compose ps -q remnawave-db 2>/dev/null || true)
@@ -220,8 +211,6 @@ backup_db() {
     
     BACKUP_FILE="$PANEL_DIR/backups/backup_$(date +%Y%m%d_%H%M%S).sql"
     
-    # ИСПРАВЛЕНИЕ: Убрана опасная конструкция с $?, которая ломалась из-за set -e.
-    # Теперь используется корректная проверка через if !
     if ! docker exec "$DB_CONTAINER" pg_dump -U postgres remnawave > "$BACKUP_FILE" 2>/dev/null; then
         log_error "Backup failed / Ошибка создания бэкапа"
         read -r -p "Press Enter to continue / Нажмите Enter для продолжения..."
@@ -236,6 +225,7 @@ show_login_info() {
     log_step "Информация о панели / Panel Information"
     
     if [ -f "/opt/remnawave/.domain" ]; then
+        local DOMAIN
         DOMAIN=$(cat /opt/remnawave/.domain)
         echo -e "${CYAN}URL панели / Panel URL:${NC} https://$DOMAIN"
     else
@@ -262,6 +252,7 @@ reset_admin_password() {
     echo "Затем выберите опцию 'Reset superadmin' из меню."
     echo ""
     echo -e "${CYAN}После сброса:${NC}"
+    local LOCAL_DOMAIN
     LOCAL_DOMAIN=$(cat /opt/remnawave/.domain 2>/dev/null || echo 'your-domain.com')
     echo "1. Откройте панель: https://$LOCAL_DOMAIN"
     echo "2. Создайте нового супер-админа с новым паролем"
