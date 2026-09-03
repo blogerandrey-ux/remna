@@ -78,6 +78,14 @@ generate_secrets() {
     local pw
     pw=$(openssl rand -hex 24)
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pw/" .env
+    
+    # ИСПРАВЛЕНИЕ: .env.sample по умолчанию содержит POSTGRES_DB=postgres.
+    # Без этой строки Postgres создаст базу "postgres", а DATABASE_URL ниже
+    # будет указывать на несуществующую "remnawave" — remnawave-контейнер не
+    # сможет подключиться, уйдёт в restart-loop и не будет слушать порт 3000
+    # (это и есть причина 502 у nginx/caddy после прохождения заглушки).
+    sed -i "s/^POSTGRES_DB=.*/POSTGRES_DB=remnawave/" .env
+    
     sed -i "s|^DATABASE_URL=.*|DATABASE_URL=\"postgresql://postgres:${pw}@remnawave-db:5432/remnawave\"|" .env
     
     log_success "Секреты сгенерированы"
@@ -126,7 +134,6 @@ configure_gate_password() {
             return 1
         fi
         
-        # Сохраняем ТОЛЬКО хеш, оригинальный пароль стирается из переменных
         echo -n "$GATE_PASS_1" | sha256sum | awk '{print $1}' > "$PANEL_DIR/.gate_hash"
         GATE_PASS_1=""
         GATE_PASS_2=""
@@ -183,6 +190,7 @@ deploy_gate_auth_service() {
         echo "$gate_hash" > "$PANEL_DIR/.gate_hash"
     fi
 
+    # ИСПРАВЛЕНИЕ: Пути изменены на /auth_validate и /auth_login для синхронизации с Nginx/Caddy
     cat > /usr/local/bin/remna-gate.py << 'PYTHON_EOF'
 #!/usr/bin/env python3
 import os, sys, json, hashlib, urllib.parse
@@ -192,10 +200,10 @@ EXPECTED_HASH = os.environ.get('REMNA_GATE_HASH', '')
 
 class GateHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # Тихий режим
+        pass
 
     def do_GET(self):
-        if self.path == '/validate':
+        if self.path == '/auth_validate':
             cookie = self.headers.get('Cookie', '')
             auth_val = None
             for part in cookie.split(';'):
@@ -215,7 +223,7 @@ class GateHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        if self.path == '/login':
+        if self.path == '/auth_login':
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length).decode('utf-8')
             
@@ -279,7 +287,11 @@ EOF
         return 1
     fi
 
-    if ! systemctl enable --now remna-gate.service; then
+    # ИСПРАВЛЕНИЕ: enable + restart вместо enable --now.
+    # Если сервис уже был запущен с предыдущим паролем (при повторном запуске install_panel),
+    # enable --now его не перезапускал — старый процесс продолжал сверять пароль со старым хешем.
+    systemctl enable remna-gate.service >/dev/null 2>&1 || true
+    if ! systemctl restart remna-gate.service; then
         log_error "Не удалось запустить сервис remna-gate"
         return 1
     fi
@@ -394,49 +406,44 @@ setup_caddy() {
 
     create_gate_page
     deploy_gate_auth_service
+
+    local gate_hash
+    gate_hash=$(cat "$PANEL_DIR/.gate_hash")
     
-    # ИСПРАВЛЕННЫЙ Caddyfile
     cat > Caddyfile << EOF
 $domain {
-    # Глобальный корень для всех file_server ниже
     root * /opt/remnawave
     
-    # 1. ACME Challenge (без авторизации)
     handle_path /.well-known/acme-challenge/* {
         root * /var/www/html
         file_server
     }
     
-    # 2. API проверки пароля (ИСПРАВЛЕНО: 127.0.0.1 вместо localhost)
     handle /auth_login {
         reverse_proxy 127.0.0.1:8088
     }
     
-    # 3. Прямой доступ к файлу заглушки
     handle /gate.html {
         file_server
     }
     
-    # 4. ЛОГИКА ПЕРЕХОДА: Если в Cookie НЕТ remna_auth
+    # ИСПРАВЛЕНИЕ: Проверяем не просто наличие подстроки "remna_auth", а точное совпадение хеша.
+    # Раньше любая кука с подстрокой "remna_auth" пускала мимо заглушки (уязвимость).
     @needs_gate {
-        not header Cookie *remna_auth*
+        not header Cookie *remna_auth=${gate_hash}*
     }
     
     handle @needs_gate {
-        # Переписываем любой запрос (например, /) на /gate.html
         rewrite * /gate.html
-        # И отдаем этот файл
         file_server
     }
     
-    # 5. Если Cookie ЕСТЬ (блок @needs_gate не сработал), идем напрямую в панель
     reverse_proxy remnawave:3000
 }
 EOF
     
     docker rm -f caddy 2>/dev/null || true
     
-    # Монтируем /opt/remnawave, чтобы Caddy видел gate.html
     if ! docker run -d --name caddy \
         --restart unless-stopped \
         --network remnawave-network \
@@ -472,7 +479,6 @@ setup_nginx() {
         log_error "Ошибка обновления пакетов"
         return 1
     fi
-    # apache2-utils больше не нужен, так как мы не используем htpasswd
     if ! apt-get install -y -qq nginx certbot python3-certbot-nginx; then
         log_error "Ошибка установки Nginx или Certbot"
         return 1
@@ -486,7 +492,7 @@ setup_nginx() {
         if [[ -f "$PANEL_DIR/.domain" ]]; then
             domain=$(cat "$PANEL_DIR/.domain")
         else
-            log_error "Домен не найден. Настройте домен сначала."
+            log_error "Домен не найден."
             return 1
         fi
     fi
@@ -523,16 +529,17 @@ server {
         add_header Content-Type text/html;
     }
 
+    # ИСПРАВЛЕНИЕ: Пути синхронизированы с Python-скриптом (/auth_validate и /auth_login)
     location = /auth_validate {
         internal;
-        proxy_pass http://127.0.0.1:8088/validate;
+        proxy_pass http://127.0.0.1:8088/auth_validate;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header Cookie \$http_cookie;
     }
 
     location = /auth_login {
-        proxy_pass http://127.0.0.1:8088/login;
+        proxy_pass http://127.0.0.1:8088/auth_login;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -555,7 +562,7 @@ EOF
     if ! certbot --nginx -d "$domain" --non-interactive --agree-tos --register-unsafely-without-email; then
         log_warn "Certbot завершился с ошибкой. Проверьте DNS и запустите certbot вручную."
     else
-        log_success "Nginx установлен с SSL и кастомной Gate-защитой (без браузерных окон)"
+        log_success "Nginx установлен с SSL и кастомной Gate-защитой"
     fi
     
     echo "nginx" > "$PANEL_DIR/.proxy_type"
@@ -653,7 +660,6 @@ uninstall_panel() {
         docker compose down || true
     fi
     
-    # Симметричное удаление прокси
     if [ -f "$PANEL_DIR/.proxy_type" ]; then
         PROXY_TYPE=$(cat "$PANEL_DIR/.proxy_type")
         if [ "$PROXY_TYPE" = "nginx" ]; then
